@@ -19,65 +19,176 @@ import Link from 'next/link';
 
 export default function DashboardSummary() {
   const [mounted, setMounted] = useState(false);
+  const [displayName, setDisplayName] = useState('Ashwini Sargar');
+  const [expiredItems, setExpiredItems] = useState<Array<Record<string, unknown>>>([]);
+  const [dueSoonCount, setDueSoonCount] = useState(0);
+  const [extinguisherCount, setExtinguisherCount] = useState(0);
+  const [plantCount, setPlantCount] = useState(0);
+  const [userCount, setUserCount] = useState(0);
+  const [inspectedCount, setInspectedCount] = useState(0);
+  const [typeBreakdown, setTypeBreakdown] = useState<Array<{ type: string; count: number; color: string }>>([]);
+  const [inspections, setInspections] = useState<Array<{ label: string; v: number }>>([
+    { label: 'Mon', v: 0 },
+    { label: 'Tue', v: 0 },
+    { label: 'Wed', v: 0 },
+    { label: 'Thu', v: 0 },
+    { label: 'Fri', v: 0 },
+    { label: 'Sat', v: 0 },
+    { label: 'Sun', v: 0 },
+  ]);
+  const [recentActivity, setRecentActivity] = useState<
+    Array<{ id: string; type: string; plant: string; where: string; who: string; when: string; status: 'installed' | 'inspected' }>
+  >([]);
 
   useEffect(() => {
     setMounted(true);
+    try {
+      const raw = window.localStorage.getItem('nuvoco-current-user');
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed?.displayName) {
+        setDisplayName(parsed.displayName);
+      }
+    } catch (error) {
+      console.error('Failed to read current user', error);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const loadLiveDashboardData = async () => {
+      try {
+        const [expiryRes, extRes, plantRes, usersRes] = await Promise.all([
+          fetch('/api/extinguishers/expiry', { cache: 'no-store' }),
+          fetch('/api/extinguishers', { cache: 'no-store' }),
+          fetch('/api/plants', { cache: 'no-store' }),
+          fetch('/api/users', { cache: 'no-store' }),
+        ]);
+
+        if (expiryRes.ok) {
+          const expiry = (await expiryRes.json()) as { expired?: Array<Record<string, unknown>>; dueSoon?: unknown[] };
+          const expired = expiry.expired ?? [];
+          setExpiredItems(expired);
+          setDueSoonCount(Array.isArray(expiry.dueSoon) ? expiry.dueSoon.length : 0);
+        }
+
+        if (plantRes.ok) {
+          const plants = (await plantRes.json()) as Array<Record<string, unknown>>;
+          setPlantCount(plants.length);
+        }
+
+        if (usersRes.ok) {
+          const users = (await usersRes.json()) as Array<Record<string, unknown>>;
+          setUserCount(users.length);
+        }
+
+        if (extRes.ok) {
+          const extRows = (await extRes.json()) as Array<Record<string, unknown>>;
+          setExtinguisherCount(extRows.length);
+
+          const installed = extRows.filter((r) => !String(r.archivedAt ?? '').trim());
+          setInspectedCount(installed.length);
+
+          const byType = new Map<string, number>();
+          for (const row of extRows) {
+            const t = String(row.type ?? '').trim().toUpperCase() || 'UNKNOWN';
+            byType.set(t, (byType.get(t) ?? 0) + 1);
+          }
+          const palette = ['#007A53', '#FF6B35', '#3B82F6', '#8BBE35', '#A855F7', '#F59E0B'];
+          const mix = Array.from(byType.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 6)
+            .map(([type, count], idx) => ({ type, count, color: palette[idx % palette.length] }));
+          setTypeBreakdown(mix);
+
+          const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const weekCounts = [0, 0, 0, 0, 0, 0, 0];
+          for (const row of extRows) {
+            const d = new Date(String(row.installedDate ?? ''));
+            if (Number.isNaN(d.getTime())) continue;
+            weekCounts[d.getDay()] += 1;
+          }
+          setInspections([
+            { label: 'Mon', v: weekCounts[1] },
+            { label: 'Tue', v: weekCounts[2] },
+            { label: 'Wed', v: weekCounts[3] },
+            { label: 'Thu', v: weekCounts[4] },
+            { label: 'Fri', v: weekCounts[5] },
+            { label: 'Sat', v: weekCounts[6] },
+            { label: 'Sun', v: weekCounts[0] },
+          ]);
+
+          const relTime = (iso: string) => {
+            const d = new Date(iso);
+            if (Number.isNaN(d.getTime())) return 'recently';
+            const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+            if (mins < 1) return 'just now';
+            if (mins < 60) return `${mins} min ago`;
+            const hrs = Math.floor(mins / 60);
+            if (hrs < 24) return `${hrs} hr ago`;
+            const days = Math.floor(hrs / 24);
+            return days === 1 ? 'Yesterday' : `${days} days ago`;
+          };
+
+          const recent = [...extRows]
+            .sort((a, b) => new Date(String(b.installedDate ?? '')).getTime() - new Date(String(a.installedDate ?? '')).getTime())
+            .slice(0, 6)
+            .map((r) => ({
+              id: String(r.id ?? 'N/A'),
+              type: `${String(r.type ?? 'N/A')} ${String(r.capacity ?? '').trim()}`.trim(),
+              plant: String(r.plant ?? 'N/A'),
+              where: String(r.locationWithElevation ?? 'N/A'),
+              who: String(r.installedBy ?? 'system'),
+              when: relTime(String(r.installedDate ?? '')),
+              status: 'installed' as const,
+            }));
+          setRecentActivity(recent);
+        }
+      } catch (error) {
+        console.error('Failed to load dashboard live data', error);
+      }
+    };
+    loadLiveDashboardData();
+  }, [mounted]);
 
   const stats = [
     {
       label: 'Total Extinguishers',
-      value: '1,245',
-      delta: '+32 this month',
+      value: extinguisherCount.toLocaleString('en-IN'),
+      delta: 'Live from register',
       icon: Flame,
       gradient: 'linear-gradient(135deg,#FF6B35,#E63946)',
       tone: '#FF6B35',
     },
     {
       label: 'Active Plants',
-      value: '12',
-      delta: 'All operational',
+      value: plantCount.toLocaleString('en-IN'),
+      delta: 'Live from plant master',
       icon: Factory,
       gradient: 'linear-gradient(135deg,#007A53,#8BBE35)',
       tone: '#007A53',
     },
     {
-      label: 'LDAP Users',
-      value: '84',
-      delta: '+3 synced today',
+      label: 'Users',
+      value: userCount.toLocaleString('en-IN'),
+      delta: 'Live from user master',
       icon: Users,
       gradient: 'linear-gradient(135deg,#3B82F6,#004B87)',
       tone: '#3B82F6',
     },
     {
-      label: 'Expiring (<30d)',
-      value: '38',
-      delta: 'Action required',
+      label: 'UT / hydraulic due',
+      value: `${expiredItems.length} overdue · ${dueSoonCount} ≤30d`,
+      delta: 'From live register',
       icon: AlertTriangle,
       gradient: 'linear-gradient(135deg,#F59E0B,#FFB627)',
       tone: '#F59E0B',
     },
   ];
 
-  const compliance = 92;
-  const inspections = [
-    { label: 'Mon', v: 40 },
-    { label: 'Tue', v: 65 },
-    { label: 'Wed', v: 52 },
-    { label: 'Thu', v: 80 },
-    { label: 'Fri', v: 70 },
-    { label: 'Sat', v: 45 },
-    { label: 'Sun', v: 30 },
-  ];
-  const maxV = Math.max(...inspections.map((i) => i.v));
-
-  const typeBreakdown = [
-    { type: 'CO2', count: 520, color: '#007A53' },
-    { type: 'DCP', count: 430, color: '#FF6B35' },
-    { type: 'Water', count: 180, color: '#3B82F6' },
-    { type: 'Foam', count: 115, color: '#8BBE35' },
-  ];
-  const totalType = typeBreakdown.reduce((a, b) => a + b.count, 0);
+  const maxV = Math.max(1, ...inspections.map((i) => i.v));
+  const totalType = Math.max(1, typeBreakdown.reduce((a, b) => a + b.count, 0));
+  const compliance = extinguisherCount === 0 ? 100 : Math.max(0, Math.min(100, Math.round((inspectedCount / extinguisherCount) * 100)));
 
   if (!mounted) return null;
 
@@ -141,6 +252,9 @@ export default function DashboardSummary() {
             <h2 style={{ fontSize: '1.75rem', fontWeight: 800, margin: 0 }}>
               Safety Overview
             </h2>
+            <p style={{ marginTop: 6, marginBottom: 0, opacity: 0.85, fontSize: '0.85rem' }}>
+              Welcome, {displayName}
+            </p>
           </div>
 
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -360,8 +474,8 @@ export default function DashboardSummary() {
               marginTop: '1rem',
             }}
           >
-            <MiniTile label="Inspected" value="1,147" tone="#10B981" />
-            <MiniTile label="Pending" value="98" tone="#F59E0B" />
+            <MiniTile label="Inspected" value={inspectedCount.toLocaleString('en-IN')} tone="#10B981" />
+            <MiniTile label="Pending" value={Math.max(extinguisherCount - inspectedCount, 0).toLocaleString('en-IN')} tone="#F59E0B" />
           </div>
         </motion.div>
       </div>
@@ -475,44 +589,7 @@ export default function DashboardSummary() {
               gap: 0,
             }}
           >
-            {[
-              {
-                id: 'NUV-FE-042',
-                type: 'CO2 4.5kg',
-                plant: 'Bhiwani Plant',
-                where: 'Floor 2 · Front',
-                who: 'nuvoco\\safety_mgr',
-                when: '2 min ago',
-                status: 'installed',
-              },
-              {
-                id: 'NUV-FE-041',
-                type: 'DCP 6kg',
-                plant: 'Chittorgarh Plant',
-                where: 'Ground Floor · Right',
-                who: 'nuvoco\\plant_head',
-                when: '1 hr ago',
-                status: 'installed',
-              },
-              {
-                id: 'NUV-FE-012',
-                type: 'Foam 9L',
-                plant: 'Jojobera Plant',
-                where: 'Warehouse · Back',
-                who: 'nuvoco\\admin',
-                when: '3 hr ago',
-                status: 'inspected',
-              },
-              {
-                id: 'NUV-FE-008',
-                type: 'Water 9L',
-                plant: 'Bhiwani Plant',
-                where: 'Canteen · Left',
-                who: 'nuvoco\\safety_mgr',
-                when: 'Yesterday',
-                status: 'inspected',
-              },
-            ].map((it, idx, arr) => (
+            {recentActivity.map((it, idx, arr) => (
               <li
                 key={it.id}
                 style={{
@@ -571,6 +648,11 @@ export default function DashboardSummary() {
                 </span>
               </li>
             ))}
+            {recentActivity.length === 0 && (
+              <li style={{ padding: '0.6rem 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                No live activity yet.
+              </li>
+            )}
           </ul>
         </motion.div>
       </div>

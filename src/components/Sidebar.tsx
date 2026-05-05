@@ -17,8 +17,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
-  { icon: Flame, label: 'Extinguishers', href: '/dashboard/extinguishers' },
   { icon: Factory, label: 'Plants', href: '/dashboard/plants' },
+  { icon: Flame, label: 'Extinguishers', href: '/dashboard/extinguishers' },
   { icon: Users, label: 'Users', href: '/dashboard/users' },
 ];
 

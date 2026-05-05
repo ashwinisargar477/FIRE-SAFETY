@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { Bell, Search, Flame } from 'lucide-react';
+import { parseSessionUserJson, resolveReporterEmail } from '@/lib/sessionUser';
 
 const titleMap: Record<string, { title: string; desc: string }> = {
   '/dashboard': { title: 'Dashboard', desc: "Today's safety overview" },
@@ -11,12 +12,14 @@ const titleMap: Record<string, { title: string; desc: string }> = {
     desc: 'Register equipment & generate QR codes',
   },
   '/dashboard/plants': { title: 'Plant Master', desc: 'All Nuvoco plant locations' },
-  '/dashboard/users': { title: 'User Master', desc: 'LDAP-synced users' },
+  '/dashboard/users': { title: 'User Master', desc: 'Manage users and roles' },
 };
 
 export default function Topbar() {
   const pathname = usePathname();
   const [time, setTime] = useState<string>('');
+  const [displayName, setDisplayName] = useState('Ashwini Sargar');
+  const [resolvedEmail, setResolvedEmail] = useState<string | null>(null);
 
   useEffect(() => {
     const update = () =>
@@ -30,6 +33,21 @@ export default function Topbar() {
     update();
     const id = setInterval(update, 30000);
     return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem('nuvoco-current-user');
+      if (!raw) return;
+      const parsed = parseSessionUserJson(raw);
+      if (parsed?.displayName) {
+        setDisplayName(parsed.displayName);
+      }
+      const email = resolveReporterEmail(parsed);
+      if (email) setResolvedEmail(email);
+    } catch (error) {
+      console.error('Failed to load current user', error);
+    }
   }, []);
 
   const current = titleMap[pathname] ?? { title: 'Nuvoco Safety', desc: '' };
@@ -130,6 +148,14 @@ export default function Topbar() {
             }}
           />
           Online · {time}
+        </span>
+
+        <span
+          className="badge hide-on-mobile"
+          style={{ background: '#FFF7ED', color: '#9A3412', fontWeight: 600 }}
+          title={resolvedEmail ? displayName : `Current logged-in user · ${displayName}`}
+        >
+          User: {resolvedEmail || displayName}
         </span>
 
         <button

@@ -18,7 +18,7 @@ import {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState('ashwinisargar18');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -30,10 +30,24 @@ export default function LoginPage() {
     setError('');
     try {
       await new Promise((r) => setTimeout(r, 1200));
-      if (username && password) {
+      const normalized = username.trim().toLowerCase();
+      const allowedUsers = [
+        'ashwinisargar18',
+        'ashwini sargar',
+        'ashwini.sargar',
+        'nuvoco\\ashwini.sargar',
+      ];
+      if (allowedUsers.includes(normalized) && password === 'nuvoco123') {
+        window.localStorage.setItem(
+          'nuvoco-current-user',
+          JSON.stringify({
+            username: 'ashwinisargar18',
+            displayName: 'Ashwini Sargar',
+          })
+        );
         router.push('/dashboard');
       } else {
-        setError('Please enter your corporate credentials.');
+        setError('Invalid credentials. Use ashwinisargar18 (or legacy Ashwini ID) and password nuvoco123.');
       }
     } catch {
       setError('LDAP connection failed. Please try again.');
@@ -340,7 +354,7 @@ export default function LoginPage() {
                   <input
                     type="text"
                     className="input-field"
-                    placeholder="nuvoco\\admin"
+                    placeholder="ashwini.sargar"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     style={{ paddingLeft: 40 }}
@@ -379,7 +393,7 @@ export default function LoginPage() {
                   <input
                     type={showPassword ? 'text' : 'password'}
                     className="input-field"
-                    placeholder="Enter password"
+                    placeholder="nuvoco123"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     style={{ paddingLeft: 40, paddingRight: 40 }}
