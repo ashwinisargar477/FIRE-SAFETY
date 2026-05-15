@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { Factory, Plus, X, ChevronLeft, ChevronRight, Pencil, Trash2 } from 'lucide-react';
+import { Plus, X, ChevronLeft, ChevronRight, Pencil, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { createPortal } from 'react-dom';
 import { locationHierarchy } from '@/data/locationHierarchy';
+import { CEMENT_MASTER_PLANTS } from '@/data/cementMasterPlants';
 
 type Plant = {
   id: number;
@@ -14,25 +15,25 @@ type Plant = {
   plantOffice: string;
   companyCode: string;
   plantCode: string;
-  plantSName: string;
   showStatus: string;
-  region: string;
+  /** Still returned by API; not shown or edited in UI. */
+  region?: string;
   plant_unit: string;
   company_name: string;
 };
 
+type PlantForm = Omit<Plant, 'id' | 'region'>;
+
 export default function PlantMasterPage() {
   const pageSize = 5;
-  const emptyPlant = {
+  const emptyPlant: PlantForm = {
     division: '',
     subDivision: '',
     zone: '',
     plantOffice: '',
     companyCode: '',
     plantCode: '',
-    plantSName: '',
     showStatus: 'Active',
-    region: '',
     plant_unit: '',
     company_name: '',
   };
@@ -40,7 +41,7 @@ export default function PlantMasterPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPlantId, setEditingPlantId] = useState<number | null>(null);
-  const [newPlant, setNewPlant] = useState(emptyPlant);
+  const [newPlant, setNewPlant] = useState<PlantForm>(emptyPlant);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -158,9 +159,7 @@ export default function PlantMasterPage() {
             plantOffice: original.plantOffice.trim(),
             companyCode: original.companyCode.trim(),
             plantCode: original.plantCode.trim(),
-            plantSName: original.plantSName.trim(),
             showStatus: original.showStatus.trim(),
-            region: original.region.trim(),
             plant_unit: original.plant_unit.trim(),
             company_name: original.company_name.trim(),
           };
@@ -171,9 +170,7 @@ export default function PlantMasterPage() {
             plantOffice: newPlant.plantOffice.trim(),
             companyCode: newPlant.companyCode.trim(),
             plantCode: newPlant.plantCode.trim(),
-            plantSName: newPlant.plantSName.trim(),
             showStatus: newPlant.showStatus.trim(),
-            region: newPlant.region.trim(),
             plant_unit: newPlant.plant_unit.trim(),
             company_name: newPlant.company_name.trim(),
           };
@@ -184,9 +181,7 @@ export default function PlantMasterPage() {
             originalNormalized.plantOffice !== draftNormalized.plantOffice ||
             originalNormalized.companyCode !== draftNormalized.companyCode ||
             originalNormalized.plantCode !== draftNormalized.plantCode ||
-            originalNormalized.plantSName !== draftNormalized.plantSName ||
             originalNormalized.showStatus !== draftNormalized.showStatus ||
-            originalNormalized.region !== draftNormalized.region ||
             originalNormalized.plant_unit !== draftNormalized.plant_unit ||
             originalNormalized.company_name !== draftNormalized.company_name;
           if (!changed) {
@@ -197,6 +192,11 @@ export default function PlantMasterPage() {
           }
         }
       }
+      const existingRegion =
+        isEdit && editingPlantId !== null
+          ? (plants.find((p) => p.id === editingPlantId)?.region ?? '')
+          : '';
+
       const response = await fetch('/api/plants', {
         method: isEdit ? 'PUT' : 'POST',
         headers: {
@@ -210,9 +210,8 @@ export default function PlantMasterPage() {
           plantOffice: newPlant.plantOffice,
           companyCode: newPlant.companyCode,
           plantCode: newPlant.plantCode,
-          plantSName: newPlant.plantSName,
           showStatus: newPlant.showStatus,
-          region: newPlant.region,
+          region: existingRegion,
           plant_unit: newPlant.plant_unit,
           company_name: newPlant.company_name,
         }),
@@ -232,11 +231,11 @@ export default function PlantMasterPage() {
       const savedPlant = (await response.json()) as Plant;
       if (isEdit) {
         setPlants((prev) => prev.map((p) => (p.id === savedPlant.id ? savedPlant : p)));
-        setToastMessage(`Plant "${savedPlant.plantSName}" updated successfully.`);
+        setToastMessage(`Plant "${savedPlant.plantOffice}" updated successfully.`);
       } else {
         setPlants((prev) => [...prev, savedPlant]);
         setCurrentPage(Math.max(1, Math.ceil((plants.length + 1) / pageSize)));
-        setToastMessage(`Plant "${savedPlant.plantSName}" added successfully.`);
+        setToastMessage(`Plant "${savedPlant.plantOffice}" added successfully.`);
       }
       setIsModalOpen(false);
       setEditingPlantId(null);
@@ -264,9 +263,7 @@ export default function PlantMasterPage() {
       plantOffice: plant.plantOffice || '',
       companyCode: plant.companyCode || '',
       plantCode: plant.plantCode || '',
-      plantSName: plant.plantSName || '',
       showStatus: plant.showStatus || 'Active',
-      region: plant.region || '',
       plant_unit: plant.plant_unit || '',
       company_name: plant.company_name || '',
     });
@@ -291,7 +288,7 @@ export default function PlantMasterPage() {
       setPlants((prev) => prev.filter((p) => p.id !== plant.id));
       setCurrentPage(1);
       setDeleteConfirmPlant(null);
-      setToastMessage(`Plant "${plant.plantSName}" deleted successfully.`);
+      setToastMessage(`Plant "${plant.plantOffice}" deleted successfully.`);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : 'Could not delete plant.');
@@ -305,7 +302,6 @@ export default function PlantMasterPage() {
       <div className="flex-between" style={{ marginBottom: '2rem' }}>
         <div>
           <h1 style={{ fontSize: '2rem', color: 'var(--color-secondary)', marginBottom: '0.5rem' }}>Plant Master</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>Manage all Nuvoco plant locations here.</p>
         </div>
         <button className="btn btn-primary" onClick={openCreateModal}>
           <Plus size={18} /> Add Plant
@@ -328,9 +324,7 @@ export default function PlantMasterPage() {
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Plant/Office</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Company Code</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Plant Code</th>
-              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Plant Short Name</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Status</th>
-              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Region</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Plant Unit</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Company Name</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Actions</th>
@@ -339,7 +333,7 @@ export default function PlantMasterPage() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={13} style={{ padding: '1.2rem 1rem', color: 'var(--text-secondary)' }}>
+                <td colSpan={11} style={{ padding: '1.2rem 1rem', color: 'var(--text-secondary)' }}>
                   Loading plants from database...
                 </td>
               </tr>
@@ -353,15 +347,11 @@ export default function PlantMasterPage() {
                 <td style={{ padding: '1rem' }}>{plant.plantOffice || '—'}</td>
                 <td style={{ padding: '1rem' }}>{plant.companyCode}</td>
                 <td style={{ padding: '1rem', color: 'var(--text-muted)' }}>{plant.plantCode}</td>
-                <td style={{ padding: '1rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Factory size={16} color="var(--color-primary)" /> {plant.plantSName}
-                </td>
                 <td style={{ padding: '1rem' }}>
                   <span style={{ display: 'inline-block', padding: '0.25rem 0.5rem', background: '#D1FAE5', color: '#065F46', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 600 }}>
                     {plant.showStatus}
                   </span>
                 </td>
-                <td style={{ padding: '1rem' }}>{plant.region}</td>
                 <td style={{ padding: '1rem' }}>{plant.plant_unit}</td>
                 <td style={{ padding: '1rem' }}>{plant.company_name}</td>
                 <td style={{ padding: '1rem' }}>
@@ -388,7 +378,7 @@ export default function PlantMasterPage() {
             ))}
             {!loading && plants.length === 0 && (
               <tr>
-                <td colSpan={13} style={{ padding: '1.2rem 1rem', color: 'var(--text-secondary)' }}>
+                <td colSpan={11} style={{ padding: '1.2rem 1rem', color: 'var(--text-secondary)' }}>
                   No plants found in database.
                 </td>
               </tr>
@@ -494,6 +484,23 @@ export default function PlantMasterPage() {
                     </option>
                   ))}
                 </select>
+                {newPlant.division === 'Manufacturing' && newPlant.subDivision === 'Cement' ? (
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    Then select <strong>North Zone Cement</strong> or <strong>East Zone Cement</strong>, and choose the plant.
+                  </p>
+                ) : null}
+                {newPlant.division === 'Manufacturing' && newPlant.subDivision === 'RMX' ? (
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    Choose zone: <strong>West Zone</strong>, <strong>West Zone RMX</strong>, <strong>South Zone RMX</strong>,{' '}
+                    <strong>North Zone RMX</strong>, or <strong>East Zone RMX</strong>, then pick the site.
+                  </p>
+                ) : null}
+                {newPlant.division === 'Non- Manufacturing' && newPlant.subDivision === 'Cement Sales' ? (
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    Choose zone: <strong>West Zone Sales</strong>, <strong>North Zone Sales</strong>, or{' '}
+                    <strong>East Zone Sales</strong>, then pick the office.
+                  </p>
+                ) : null}
               </div>
               <div className="form-group">
                 <label className="input-label">Zone</label>
@@ -516,6 +523,27 @@ export default function PlantMasterPage() {
                     </option>
                   ))}
                 </select>
+                {newPlant.division === 'Manufacturing' &&
+                newPlant.subDivision === 'Cement' &&
+                Boolean(newPlant.zone) ? (
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    Plants listed below match this cement zone only.
+                  </p>
+                ) : null}
+                {newPlant.division === 'Manufacturing' &&
+                newPlant.subDivision === 'RMX' &&
+                Boolean(newPlant.zone) ? (
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    Plant/offices listed below match this RMX zone only (West Zone vs West Zone RMX have different lists).
+                  </p>
+                ) : null}
+                {newPlant.division === 'Non- Manufacturing' &&
+                newPlant.subDivision === 'Cement Sales' &&
+                Boolean(newPlant.zone) ? (
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    Offices listed below match this sales zone only.
+                  </p>
+                ) : null}
               </div>
               <div className="form-group">
                 <label className="input-label">Plant/Office</label>
@@ -524,17 +552,29 @@ export default function PlantMasterPage() {
                   value={newPlant.plantOffice}
                   onChange={(e) => {
                     const plantOffice = e.target.value;
+                    const match = locationHierarchy.find(
+                      (item) =>
+                        item.division === newPlant.division &&
+                        item.subDivision === newPlant.subDivision &&
+                        item.zone === newPlant.zone &&
+                        item.plantOffice === plantOffice
+                    );
+                    const master = CEMENT_MASTER_PLANTS.find((p) => p.plantOffice === plantOffice);
+
                     setNewPlant({
                       ...newPlant,
                       plantOffice,
-                      plantSName: plantOffice || newPlant.plantSName,
+                      plant_unit: match?.zone ?? newPlant.plant_unit,
+                      ...(editingPlantId === null && master
+                        ? { companyCode: master.companyCode, plantCode: master.plantCode }
+                        : {}),
                     });
                   }}
                   required
                 >
                   <option value="">Select Plant/Office</option>
                   {plantOfficeOptions.map((plantOffice) => (
-                    <option key={plantOffice} value={plantOffice}>
+                    <option key={`${newPlant.zone}-${plantOffice}`} value={plantOffice}>
                       {plantOffice}
                     </option>
                   ))}
@@ -565,16 +605,8 @@ export default function PlantMasterPage() {
                 />
               </div>
               <div className="form-group">
-                <label className="input-label">Plant Short Name</label>
-                <input type="text" className="input-field" value={newPlant.plantSName} onChange={e => setNewPlant({...newPlant, plantSName: e.target.value})} required placeholder="e.g. Kutch Cement Plant" maxLength={255} />
-              </div>
-              <div className="form-group">
                 <label className="input-label">Status</label>
                 <input type="text" className="input-field" value={newPlant.showStatus} onChange={e => setNewPlant({...newPlant, showStatus: e.target.value})} placeholder="e.g. Active" />
-              </div>
-              <div className="form-group">
-                <label className="input-label">Region</label>
-                <input type="text" className="input-field" value={newPlant.region} onChange={e => setNewPlant({...newPlant, region: e.target.value})} placeholder="e.g. West" />
               </div>
               <div className="form-group">
                 <label className="input-label">Plant Unit</label>
@@ -643,7 +675,7 @@ export default function PlantMasterPage() {
                 Do you want to delete this plant?
               </p>
               <p style={{ margin: '0.5rem 0 0', fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                {deleteConfirmPlant.plantSName}
+                {deleteConfirmPlant.plantOffice}
               </p>
             </div>
             <div

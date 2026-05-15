@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { seedCementMasterPlantsIfMissing } from '@/lib/cementPlantSeed';
 
 type CreatePlantBody = {
   id?: number;
@@ -9,7 +10,6 @@ type CreatePlantBody = {
   plantOffice?: string;
   companyCode?: string;
   plantCode?: string;
-  plantSName?: string;
   showStatus?: string;
   region?: string;
   plant_unit?: string;
@@ -23,12 +23,40 @@ const TABLE_NAME = 'tbl_plants';
 type ColumnMeta = {
   COLUMN_NAME: string;
   DATA_TYPE: string;
+  COLUMN_TYPE: string;
 };
+
+type PlantColumnInfo = { dataType: string; columnType: string };
+
+/** Parse labels from MySQL/MariaDB `enum('A','B')` (COLUMN_TYPE). */
+function parseMysqlEnumLabels(columnType: string): string[] {
+  const trimmed = columnType.trim();
+  if (!/^enum\s*\(/i.test(trimmed)) return [];
+  const inner = trimmed.replace(/^enum\s*\(/i, '').replace(/\)\s*$/i, '');
+  const labels: string[] = [];
+  let buf = '';
+  let inQuote = false;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === "'" && inner[i - 1] !== '\\') {
+      if (!inQuote) {
+        inQuote = true;
+      } else {
+        inQuote = false;
+        labels.push(buf.replace(/''/g, "'"));
+        buf = '';
+      }
+      continue;
+    }
+    if (inQuote) buf += ch;
+  }
+  return labels;
+}
 
 async function getPlantColumnMeta() {
   const rows = (await prisma.$queryRawUnsafe(
     `
-      SELECT COLUMN_NAME, DATA_TYPE
+      SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE
       FROM information_schema.columns
       WHERE table_schema = ? AND table_name = ?
     `,
@@ -36,11 +64,14 @@ async function getPlantColumnMeta() {
     TABLE_NAME
   )) as ColumnMeta[];
 
-  const dataTypeByColumn = new Map<string, string>();
+  const byColumn = new Map<string, PlantColumnInfo>();
   for (const row of rows) {
-    dataTypeByColumn.set(row.COLUMN_NAME, row.DATA_TYPE.toLowerCase());
+    byColumn.set(row.COLUMN_NAME, {
+      dataType: row.DATA_TYPE.toLowerCase(),
+      columnType: row.COLUMN_TYPE,
+    });
   }
-  return dataTypeByColumn;
+  return byColumn;
 }
 
 async function ensurePlantHierarchyColumns() {
@@ -69,41 +100,25 @@ async function ensurePlantHierarchyColumns() {
   await ensureColumn('plantOffice', "plantOffice VARCHAR(255) NOT NULL DEFAULT ''");
 }
 
-/**
- * Legacy `tbl_plants` often has very short `plantSName` / `plantName` (e.g. varchar(10)).
- * Editing with a longer label triggers MySQL 1406. Widen to VARCHAR(255) when needed.
- */
-async function ensurePlantNameColumnsWideEnough() {
-  type ColRow = {
-    COLUMN_NAME: string;
-    DATA_TYPE: string;
-    CHARACTER_MAXIMUM_LENGTH: number | null;
-    IS_NULLABLE: 'YES' | 'NO';
-  };
-  const rows = (await prisma.$queryRawUnsafe(
-    `
-      SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
-      FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-        AND COLUMN_NAME IN ('plantSName', 'plantName')
-    `,
-    TABLE_SCHEMA,
-    TABLE_NAME
-  )) as ColRow[];
+/** Removes legacy short-name columns; plant label is `plantOffice`. */
+async function dropLegacyPlantNameColumns() {
+  for (const columnName of ['plantSName', 'plantName'] as const) {
+    const existing = (await prisma.$queryRawUnsafe(
+      `
+        SELECT COLUMN_NAME
+        FROM information_schema.columns
+        WHERE table_schema = ? AND table_name = ? AND column_name = ?
+      `,
+      TABLE_SCHEMA,
+      TABLE_NAME,
+      columnName
+    )) as Array<Record<string, unknown>>;
 
-  const targetLen = 255;
-  for (const row of rows) {
-    const dt = row.DATA_TYPE.toLowerCase();
-    if (dt !== 'varchar' && dt !== 'char') continue;
-    const maxLen = row.CHARACTER_MAXIMUM_LENGTH;
-    if (maxLen != null && maxLen >= targetLen) continue;
-
-    const col = row.COLUMN_NAME;
-    const nullable = row.IS_NULLABLE === 'YES';
-    const nullSql = nullable ? 'NULL' : 'NOT NULL';
-    await prisma.$executeRawUnsafe(
-      `ALTER TABLE ${TABLE_SCHEMA}.${TABLE_NAME} MODIFY COLUMN \`${col}\` VARCHAR(${targetLen}) ${nullSql}`
-    );
+    if (existing.length > 0) {
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE ${TABLE_SCHEMA}.${TABLE_NAME} DROP COLUMN \`${columnName}\``
+      );
+    }
   }
 }
 
@@ -116,12 +131,55 @@ function normalizeByColumnType(value: string, dataType: string | undefined) {
   return n;
 }
 
-function normalizeStatusByType(value: string, dataType: string | undefined) {
+function normalizeStatusByType(
+  value: string,
+  info: PlantColumnInfo | undefined
+): string | number {
   const raw = value.trim().toLowerCase();
   const isActive =
-    ['1', 'true', 't', 'active', 'yes', 'y', 'a'].includes(raw) ||
-    (!raw || raw === 'enabled');
+    ['1', 'true', 't', 'active', 'yes', 'y', 'a'].includes(raw) || !raw || raw === 'enabled';
   const isInactive = ['0', 'false', 'f', 'inactive', 'no', 'n', 'i', 'disabled'].includes(raw);
+
+  const dataType = info?.dataType;
+  const columnType = info?.columnType ?? '';
+
+  const numericTypes = new Set(['tinyint', 'smallint', 'mediumint', 'int', 'bigint', 'decimal', 'double', 'float']);
+  if (dataType && numericTypes.has(dataType)) {
+    if (isInactive) return 0;
+    if (isActive) return 1;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 1;
+  }
+
+  // Legacy table: ENUM('Active','Inactive',...) — must send a real enum label, not 't'/'f'.
+  if (dataType === 'enum') {
+    const labels = parseMysqlEnumLabels(columnType);
+    if (labels.length > 0) {
+      const exact = labels.find((l) => l.toLowerCase() === value.trim().toLowerCase());
+      if (exact) return exact;
+
+      const pickMatch = (re: RegExp) => labels.find((l) => re.test(l.toLowerCase()));
+      if (isInactive) {
+        return (
+          pickMatch(/inactive|disable|no|off|0/) ??
+          labels.find((l) => l === 'f' || l === 'N') ??
+          labels[labels.length - 1] ??
+          labels[0]
+        );
+      }
+      if (isActive) {
+        return (
+          pickMatch(/active|enable|yes|on|1/) ??
+          labels.find((l) => l === 't' || l === 'Y') ??
+          labels[0]
+        );
+      }
+      return labels[0];
+    }
+    if (isInactive) return 'Inactive';
+    if (isActive) return 'Active';
+    return value;
+  }
 
   if (!dataType) {
     if (isInactive) return 'f';
@@ -129,15 +187,7 @@ function normalizeStatusByType(value: string, dataType: string | undefined) {
     return value;
   }
 
-  const numericTypes = new Set(['tinyint', 'smallint', 'mediumint', 'int', 'bigint', 'decimal', 'double', 'float']);
-  if (numericTypes.has(dataType)) {
-    if (isActive) return 1;
-    if (isInactive) return 0;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : 1;
-  }
-
-  // For char(1), enum('t','f'), varchar status columns, send compact flags.
+  // char(1), varchar, etc.: compact flags when they fit typical legacy schemas.
   if (isActive) return 't';
   if (isInactive) return 'f';
 
@@ -153,7 +203,6 @@ function mapPlantRow(row: Record<string, unknown>) {
     plantOffice: String(row.plantOffice ?? ''),
     companyCode: String(row.companyCode ?? ''),
     plantCode: String(row.plantCode ?? ''),
-    plantSName: String(row.plantSName ?? ''),
     showStatus: String(row.showStatus ?? ''),
     region: String(row.region ?? ''),
     plant_unit: String(row.plant_unit ?? ''),
@@ -165,18 +214,14 @@ function mapPlantRow(row: Record<string, unknown>) {
 export async function GET() {
   try {
     await ensurePlantHierarchyColumns();
-    await ensurePlantNameColumnsWideEnough();
-    const meta = await getPlantColumnMeta();
-    const hasPlantName = meta.has('plantName');
-    const hasPlantSName = meta.has('plantSName');
-    const nameSelect = hasPlantSName
-      ? 'plantSName'
-      : hasPlantName
-      ? 'plantName AS plantSName'
-      : "'' AS plantSName";
-
+    await dropLegacyPlantNameColumns();
+    try {
+      await seedCementMasterPlantsIfMissing();
+    } catch (seedErr) {
+      console.error('Cement plant seed skipped', seedErr);
+    }
     const rows = (await prisma.$queryRawUnsafe(
-      `SELECT id, division, subDivision, zone, plantOffice, companyCode, plantCode, ${nameSelect}, showStatus, region, plant_unit, cluster, company_name FROM ${TABLE_SCHEMA}.${TABLE_NAME} ORDER BY id ASC`
+      `SELECT id, division, subDivision, zone, plantOffice, companyCode, plantCode, showStatus, region, plant_unit, cluster, company_name FROM ${TABLE_SCHEMA}.${TABLE_NAME} ORDER BY id ASC`
     )) as Record<string, unknown>[];
     const plants = rows.map((row) => mapPlantRow(row));
     return NextResponse.json(plants, { status: 200 });
@@ -192,7 +237,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     await ensurePlantHierarchyColumns();
-    await ensurePlantNameColumnsWideEnough();
+    await dropLegacyPlantNameColumns();
     const body = (await request.json()) as CreatePlantBody;
     const division = body.division?.trim() || '';
     const subDivision = body.subDivision?.trim() || '';
@@ -200,26 +245,23 @@ export async function POST(request: Request) {
     const plantOffice = body.plantOffice?.trim() || '';
     const companyCode = body.companyCode?.trim();
     const plantCode = body.plantCode?.trim();
-    const plantSName = body.plantSName?.trim();
     const showStatus = body.showStatus?.trim() || 'Active';
     const region = body.region?.trim() || '';
     const plant_unit = body.plant_unit?.trim() || '';
     const cluster = body.cluster?.trim() || '';
     const company_name = body.company_name?.trim() || '';
 
-    if (!companyCode || !plantCode || !plantSName) {
+    if (!companyCode || !plantCode) {
       return NextResponse.json(
-        { message: 'companyCode, plantCode, and plantSName are required.' },
+        { message: 'companyCode and plantCode are required.' },
         { status: 400 }
       );
     }
 
     const meta = await getPlantColumnMeta();
-    const normalizedCompanyCode = normalizeByColumnType(companyCode, meta.get('companyCode'));
-    const normalizedPlantCode = normalizeByColumnType(plantCode, meta.get('plantCode'));
+    const normalizedCompanyCode = normalizeByColumnType(companyCode, meta.get('companyCode')?.dataType);
+    const normalizedPlantCode = normalizeByColumnType(plantCode, meta.get('plantCode')?.dataType);
     const normalizedShowStatus = normalizeStatusByType(showStatus, meta.get('showStatus'));
-    const hasPlantName = meta.has('plantName');
-    const hasPlantSName = meta.has('plantSName');
 
     if (normalizedCompanyCode === null) {
       return NextResponse.json(
@@ -244,15 +286,6 @@ export async function POST(request: Request) {
       normalizedPlantCode as string | number,
     ];
 
-    if (hasPlantSName) {
-      insertColumns.push('plantSName');
-      insertValues.push(plantSName);
-    }
-    if (hasPlantName) {
-      insertColumns.push('plantName');
-      insertValues.push(plantSName);
-    }
-
     insertColumns.push('showStatus', 'region', 'plant_unit', 'cluster', 'company_name');
     insertValues.push(normalizedShowStatus as string | number, region, plant_unit, cluster, company_name);
 
@@ -267,13 +300,8 @@ export async function POST(request: Request) {
       ...insertValues
     );
 
-    const nameSelect = hasPlantSName
-      ? 'plantSName'
-      : hasPlantName
-      ? 'plantName AS plantSName'
-      : "'' AS plantSName";
     const rows = (await prisma.$queryRawUnsafe(
-      `SELECT id, division, subDivision, zone, plantOffice, companyCode, plantCode, ${nameSelect}, showStatus, region, plant_unit, cluster, company_name FROM ${TABLE_SCHEMA}.${TABLE_NAME} ORDER BY id DESC LIMIT 1`
+      `SELECT id, division, subDivision, zone, plantOffice, companyCode, plantCode, showStatus, region, plant_unit, cluster, company_name FROM ${TABLE_SCHEMA}.${TABLE_NAME} ORDER BY id DESC LIMIT 1`
     )) as Record<string, unknown>[];
     const plant = mapPlantRow(rows[0] ?? {});
 
@@ -293,7 +321,7 @@ export async function POST(request: Request) {
 export async function PUT(request: Request) {
   try {
     await ensurePlantHierarchyColumns();
-    await ensurePlantNameColumnsWideEnough();
+    await dropLegacyPlantNameColumns();
     const body = (await request.json()) as CreatePlantBody;
     const id = Number(body.id ?? 0);
     const division = body.division?.trim() || '';
@@ -302,26 +330,23 @@ export async function PUT(request: Request) {
     const plantOffice = body.plantOffice?.trim() || '';
     const companyCode = body.companyCode?.trim();
     const plantCode = body.plantCode?.trim();
-    const plantSName = body.plantSName?.trim();
     const showStatus = body.showStatus?.trim() || 'Active';
     const region = body.region?.trim() || '';
     const plant_unit = body.plant_unit?.trim() || '';
     const cluster = body.cluster?.trim() || '';
     const company_name = body.company_name?.trim() || '';
 
-    if (!id || !companyCode || !plantCode || !plantSName) {
+    if (!id || !companyCode || !plantCode) {
       return NextResponse.json(
-        { message: 'id, companyCode, plantCode, and plantSName are required.' },
+        { message: 'id, companyCode, and plantCode are required.' },
         { status: 400 }
       );
     }
 
     const meta = await getPlantColumnMeta();
-    const normalizedCompanyCode = normalizeByColumnType(companyCode, meta.get('companyCode'));
-    const normalizedPlantCode = normalizeByColumnType(plantCode, meta.get('plantCode'));
+    const normalizedCompanyCode = normalizeByColumnType(companyCode, meta.get('companyCode')?.dataType);
+    const normalizedPlantCode = normalizeByColumnType(plantCode, meta.get('plantCode')?.dataType);
     const normalizedShowStatus = normalizeStatusByType(showStatus, meta.get('showStatus'));
-    const hasPlantName = meta.has('plantName');
-    const hasPlantSName = meta.has('plantSName');
 
     if (normalizedCompanyCode === null) {
       return NextResponse.json(
@@ -349,8 +374,6 @@ export async function PUT(request: Request) {
     addSet('plantOffice', plantOffice);
     addSet('companyCode', normalizedCompanyCode as string | number);
     addSet('plantCode', normalizedPlantCode as string | number);
-    if (hasPlantSName) addSet('plantSName', plantSName);
-    if (hasPlantName) addSet('plantName', plantSName);
     addSet('showStatus', normalizedShowStatus as string | number);
     addSet('region', region);
     addSet('plant_unit', plant_unit);
@@ -367,13 +390,8 @@ export async function PUT(request: Request) {
       id
     );
 
-    const nameSelect = hasPlantSName
-      ? 'plantSName'
-      : hasPlantName
-      ? 'plantName AS plantSName'
-      : "'' AS plantSName";
     const rows = (await prisma.$queryRawUnsafe(
-      `SELECT id, division, subDivision, zone, plantOffice, companyCode, plantCode, ${nameSelect}, showStatus, region, plant_unit, cluster, company_name FROM ${TABLE_SCHEMA}.${TABLE_NAME} WHERE id = ? LIMIT 1`,
+      `SELECT id, division, subDivision, zone, plantOffice, companyCode, plantCode, showStatus, region, plant_unit, cluster, company_name FROM ${TABLE_SCHEMA}.${TABLE_NAME} WHERE id = ? LIMIT 1`,
       id
     )) as Record<string, unknown>[];
 

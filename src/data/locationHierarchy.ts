@@ -6,20 +6,25 @@ export type LocationHierarchyItem = {
 };
 
 export const locationHierarchy: LocationHierarchyItem[] = [
+  /* Cement → zone → plant (North Zone Cement) */
   { division: 'Manufacturing', subDivision: 'Cement', zone: 'North Zone Cement', plantOffice: 'Bihar Cement Plant-BR' },
-  { division: 'Manufacturing', subDivision: 'Cement', zone: 'North Zone Cement', plantOffice: 'NImbol Cement Plant- RJ' },
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'North Zone Cement', plantOffice: 'Nimbol Cement Plant-RJ' },
   { division: 'Manufacturing', subDivision: 'Cement', zone: 'North Zone Cement', plantOffice: 'Chittor Cement Plant-RJ' },
   { division: 'Manufacturing', subDivision: 'Cement', zone: 'North Zone Cement', plantOffice: 'Haryana Cement Plant-HR' },
   { division: 'Manufacturing', subDivision: 'Cement', zone: 'North Zone Cement', plantOffice: 'Kutch Cement Plant-Gj' },
   { division: 'Manufacturing', subDivision: 'Cement', zone: 'North Zone Cement', plantOffice: 'Surat Cement Plant-Gj' },
   { division: 'Manufacturing', subDivision: 'Cement', zone: 'North Zone Cement', plantOffice: 'Virochannagar Cement Plant GJ(Sachana)' },
-  { division: 'Manufacturing', subDivision: 'Cement', zone: 'West Zone Cement', plantOffice: 'Mejia Cement Plant-WB' },
-  { division: 'Manufacturing', subDivision: 'Cement', zone: 'West Zone Cement', plantOffice: 'Arasmeta Cement Plant-CG' },
-  { division: 'Manufacturing', subDivision: 'Cement', zone: 'West Zone Cement', plantOffice: 'Jojobera Cement Plant-JH' },
-  { division: 'Manufacturing', subDivision: 'Cement', zone: 'West Zone Cement', plantOffice: 'Odisha Cement Plant-OD' },
-  { division: 'Manufacturing', subDivision: 'Cement', zone: 'West Zone Cement', plantOffice: 'Panagarh Cement Plant- WB' },
-  { division: 'Manufacturing', subDivision: 'Cement', zone: 'West Zone Cement', plantOffice: 'Risda Cement Plant-CG' },
-  { division: 'Manufacturing', subDivision: 'Cement', zone: 'West Zone Cement', plantOffice: 'Sonadih Cement Plant-CG' },
+  /* Cement → East Zone Cement (Bihar listed again for zone-specific selection; same master name as North) */
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'East Zone Cement', plantOffice: 'Bihar Cement Plant-BR' },
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'East Zone Cement', plantOffice: 'Mejia Cement Plant-WB' },
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'East Zone Cement', plantOffice: 'Arasmeta Cement Plant-CG' },
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'East Zone Cement', plantOffice: 'Jojobera Cement Plant-JH' },
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'East Zone Cement', plantOffice: 'Odisha Cement Plant-OD' },
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'East Zone Cement', plantOffice: 'Panagarh Cement Plant-WB' },
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'East Zone Cement', plantOffice: 'Risda Cement Plant-CG' },
+  { division: 'Manufacturing', subDivision: 'Cement', zone: 'East Zone Cement', plantOffice: 'Sonadih Cement Plant-CG' },
+
+  /* RMX → zones: West Zone | West Zone RMX | South Zone RMX | North Zone RMX | East Zone RMX */
   { division: 'Manufacturing', subDivision: 'RMX', zone: 'West Zone', plantOffice: 'Gurugram office' },
   { division: 'Manufacturing', subDivision: 'RMX', zone: 'West Zone', plantOffice: 'Jaipur Office' },
   { division: 'Manufacturing', subDivision: 'RMX', zone: 'West Zone', plantOffice: 'Kolkata Office' },
@@ -78,6 +83,8 @@ export const locationHierarchy: LocationHierarchyItem[] = [
   { division: 'Manufacturing', subDivision: 'RMX', zone: 'East Zone RMX', plantOffice: 'Guwahati' },
   { division: 'Manufacturing', subDivision: 'RMX', zone: 'East Zone RMX', plantOffice: 'Bhubaneswar' },
   { division: 'Manufacturing', subDivision: 'RMX', zone: 'East Zone RMX', plantOffice: 'Raipur' },
+
+  /* Non-Manufacturing → Cement Sales → zones: West | North | East Zone Sales */
   { division: 'Non- Manufacturing', subDivision: 'Cement Sales', zone: 'West Zone Sales', plantOffice: 'Ahmedabad Office' },
   { division: 'Non- Manufacturing', subDivision: 'Cement Sales', zone: 'West Zone Sales', plantOffice: 'CDIC' },
   { division: 'Non- Manufacturing', subDivision: 'Cement Sales', zone: 'West Zone Sales', plantOffice: 'Jaipur Office' },

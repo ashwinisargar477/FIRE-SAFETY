@@ -18,7 +18,7 @@ import {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [username, setUsername] = useState('ashwinisargar18');
+  const [username, setUsername] = useState('aditya.singh01@nuvoco.com');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -29,28 +29,36 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
-      await new Promise((r) => setTimeout(r, 1200));
-      const normalized = username.trim().toLowerCase();
-      const allowedUsers = [
-        'ashwinisargar18',
-        'ashwini sargar',
-        'ashwini.sargar',
-        'nuvoco\\ashwini.sargar',
-      ];
-      if (allowedUsers.includes(normalized) && password === 'nuvoco123') {
-        window.localStorage.setItem(
-          'nuvoco-current-user',
-          JSON.stringify({
-            username: 'ashwinisargar18',
-            displayName: 'Ashwini Sargar',
-          })
-        );
-        router.push('/dashboard');
-      } else {
-        setError('Invalid credentials. Use ashwinisargar18 (or legacy Ashwini ID) and password nuvoco123.');
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: username.trim(),
+          password,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        user?: { username: string; displayName: string; email: string };
+      };
+
+      if (!res.ok || !data.ok || !data.user) {
+        setError(data.error ?? 'Sign-in failed. Check your corporate ID and password.');
+        return;
       }
+
+      window.localStorage.setItem(
+        'nuvoco-current-user',
+        JSON.stringify({
+          username: data.user.username,
+          displayName: data.user.displayName,
+          email: data.user.email,
+        })
+      );
+      router.push('/dashboard');
     } catch {
-      setError('LDAP connection failed. Please try again.');
+      setError('Could not reach the server. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -354,7 +362,7 @@ export default function LoginPage() {
                   <input
                     type="text"
                     className="input-field"
-                    placeholder="ashwini.sargar"
+                    placeholder="aditya.singh01@nuvoco.com"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     style={{ paddingLeft: 40 }}
@@ -393,7 +401,7 @@ export default function LoginPage() {
                   <input
                     type={showPassword ? 'text' : 'password'}
                     className="input-field"
-                    placeholder="nuvoco123"
+                    placeholder="Your LDAP password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     style={{ paddingLeft: 40, paddingRight: 40 }}

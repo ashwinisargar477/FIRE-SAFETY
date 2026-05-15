@@ -1,13 +1,27 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, QrCode as QRIcon, X, Archive, RotateCcw, Trash2, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
-import QRCode from 'react-qr-code';
+import { Plus, QrCode as QRIcon, X, Archive, RotateCcw, Trash2, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { locationHierarchy } from '@/data/locationHierarchy';
-import { buildIssueReporterPayload } from '@/lib/sessionUser';
 import HydraulicDuePopup from '@/components/HydraulicDuePopup';
+import { formatManufacturingYear } from '@/lib/manufacturingYear';
+import { addYearsToIsoDate } from '@/lib/addYearsToIsoDate';
+/* Class legend is rendered via FireClassReferenceBlock; only dropdown options are imported here. */
+import { FIRE_CLASS_TYPE_OPTIONS } from '@/lib/fireClassReference';
+import ExtinguisherQrViewModal from '@/components/ExtinguisherQrViewModal';
+
+/** Select value for “Others”; free-text until added or saved on submit. */
+const TYPE_OTHERS_VALUE = '__others__';
+
+const BASE_TYPE_OPTIONS = ['D', 'ABC', 'BC', 'CO2', 'Water', 'Foam'] as const;
+
+const EXTRA_TYPES_STORAGE_KEY = 'nuvoco-extinguisher-extra-types';
+
+const BASE_MEDIA_OPTIONS = ['Co2', 'DCP', 'Foam', 'Water'] as const;
+
+const EXTRA_MEDIA_STORAGE_KEY = 'nuvoco-extinguisher-extra-media';
 
 // Mock Data structure
 interface Extinguisher {
@@ -38,13 +52,17 @@ interface Extinguisher {
   installedDate: string;
   archivedAt?: string | null;
   archivedReason?: string | null;
+  /** ISO-like string from API, or null if never inspected. */
+  lastInspectionAt?: string | null;
+  /** True when active row has no inspection in the last 3 months (after new-install grace). */
+  inspectionPending?: boolean;
 }
 
 interface PlantMaster {
   id: number;
   companyCode: string;
   plantCode: string;
-  plantSName: string;
+  plantOffice: string;
   showStatus: string;
   region: string;
   plant_unit: string;
@@ -52,58 +70,26 @@ interface PlantMaster {
   company_name: string;
 }
 
-function buildEmptyCylinderMailto(ext: Extinguisher, reporterText: string, reporterEmail: string | null, note: string): string {
-  const targetEmail = reporterEmail || 'ashwinisargar18@gmail.com';
-  const subject = `[Nuvoco Fire Safety] Empty cylinder report - ${ext.id}`;
-  const bodyLines = [
-    'An empty extinguisher cylinder has been reported.',
-    '',
-    `Extinguisher ID: ${ext.id}`,
-    `Plant: ${ext.plant || 'N/A'} (${ext.plantCode || 'N/A'})`,
-    `Location: ${ext.locationWithElevation || 'N/A'}`,
-    `Make/Type: ${ext.make || 'N/A'} / ${ext.type || 'N/A'}`,
-    `Media/Capacity: ${ext.media || 'N/A'} / ${ext.capacity || 'N/A'}`,
-    `Last UT test: ${ext.lastUtTestDate || 'N/A'}`,
-    `Manufacturing Date: ${ext.manufacturingDate || 'N/A'}`,
-    `Next UT test: ${ext.nextUtTestDate || 'N/A'}`,
-    `Hydraulic test due: ${ext.hydraulicDueDate || 'N/A'}`,
-    '',
-    `Reported by: ${reporterText}`,
-    `Note: ${note}`,
-    `Time: ${new Date().toISOString()}`,
-  ];
-  return `mailto:${encodeURIComponent(targetEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyLines.join('\n'))}`;
+function normalizeOptionKeyLocal(s: string) {
+  return s.trim().toUpperCase();
 }
 
-function buildQrValue(ext: Extinguisher) {
-  return [
-    'NUVOCO FIRE SAFETY - EXTINGUISHER',
-    `Division: ${ext.division}`,
-    `Sub Division: ${ext.subDivision}`,
-    `Zone: ${ext.zone}`,
-    `Plant/Office: ${ext.plantOffice}`,
-    `Unique Serial Number: ${ext.id}`,
-    `Plant ID: ${ext.plantId ?? 'N/A'}`,
-    `Plant: ${ext.plant}`,
-    `Company Code: ${ext.companyCode}`,
-    `Plant Code: ${ext.plantCode}`,
-    `Plant Status: ${ext.showStatus}`,
-    `Region: ${ext.region}`,
-    `Plant Unit: ${ext.plant_unit}`,
-    `Cluster: ${ext.cluster}`,
-    `Company Name: ${ext.company_name}`,
-    `Make: ${ext.make}`,
-    `Type: ${ext.type}`,
-    `Media: ${ext.media}`,
-    `Capacity: ${ext.capacity}`,
-    `Location with Elevation: ${ext.locationWithElevation}`,
-    `Last UT test Date: ${ext.lastUtTestDate}`,
-    `Manufacturing Date: ${ext.manufacturingDate}`,
-    `Next UT test: ${ext.nextUtTestDate}`,
-    `Hydraulic test due: ${ext.hydraulicDueDate ?? 'N/A'}`,
-    `Installed By: ${ext.installedBy}`,
-    `Installed Date: ${new Date(ext.installedDate).toLocaleString('en-GB')}`,
-  ].join('\n');
+function resolveTypeSelectForForm(ext: Extinguisher, extraTypeOptions: string[]) {
+  const raw = ext.type?.trim() ?? '';
+  const key = normalizeOptionKeyLocal(raw);
+  const all = [...BASE_TYPE_OPTIONS, ...FIRE_CLASS_TYPE_OPTIONS, ...extraTypeOptions];
+  const hit = all.find((t) => normalizeOptionKeyLocal(t) === key);
+  if (hit) return { typeSelect: hit, typeOther: '' as string };
+  return { typeSelect: TYPE_OTHERS_VALUE, typeOther: raw };
+}
+
+function resolveMediaSelectForForm(ext: Extinguisher, extraMediaOptions: string[]) {
+  const raw = ext.media?.trim() ?? '';
+  const key = normalizeOptionKeyLocal(raw);
+  const all = [...BASE_MEDIA_OPTIONS, ...extraMediaOptions];
+  const hit = all.find((m) => normalizeOptionKeyLocal(m) === key);
+  if (hit) return { mediaSelect: hit, mediaOther: '' as string };
+  return { mediaSelect: TYPE_OTHERS_VALUE, mediaOther: raw };
 }
 
 export default function ExtinguishersPage() {
@@ -113,6 +99,8 @@ export default function ExtinguishersPage() {
   const [plantsMaster, setPlantsMaster] = useState<PlantMaster[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  /** When set, registration modal is editing this serial (serial field locked). */
+  const [editingExtinguisherId, setEditingExtinguisherId] = useState<string | null>(null);
   const [selectedQR, setSelectedQR] = useState<Extinguisher | null>(null);
   const [mounted, setMounted] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -120,15 +108,34 @@ export default function ExtinguishersPage() {
   const [deleteConfirmExt, setDeleteConfirmExt] = useState<Extinguisher | null>(null);
   const [deleteDialogBusy, setDeleteDialogBusy] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
-  const [emptyReportBusy, setEmptyReportBusy] = useState(false);
+  const [toastIsError, setToastIsError] = useState(false);
+  const [extraTypeOptions, setExtraTypeOptions] = useState<string[]>([]);
+  const extraTypesHydrated = useRef(false);
+  const [extraMediaOptions, setExtraMediaOptions] = useState<string[]>([]);
+  const extraMediaHydrated = useRef(false);
   const totalPages = Math.max(1, Math.ceil(extinguishers.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const startIndex = (safePage - 1) * pageSize;
   const paginatedExtinguishers = extinguishers.slice(startIndex, startIndex + pageSize);
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const handleQrInspectionSaved = useCallback(() => {
+    const listUrl = showArchived ? '/api/extinguishers?includeArchived=1' : '/api/extinguishers';
+    void fetch(listUrl, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (!json || !Array.isArray(json)) return;
+        const arr = json as Extinguisher[];
+        setExtinguishers(arr);
+        if (arr.some((e) => Boolean(e.inspectionPending))) {
+          void fetch('/api/extinguishers/inspection-pending-notify', { method: 'POST' }).catch(() => {
+            /* non-blocking */
+          });
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
+  }, [showArchived]);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -147,14 +154,15 @@ export default function ExtinguishersPage() {
     cluster: '',
     company_name: '',
     make: '',
-    type: 'D',
-    media: 'Co2',
+    typeSelect: 'D',
+    typeOther: '',
+    mediaSelect: 'Co2',
+    mediaOther: '',
     capacity: '4.5',
     locationWithElevation: '',
-    lastUtTestDate: '',
     manufacturingDate: '',
-    nextUtTestDate: '',
-    hydraulicDueDate: ''
+    hydraulicDueDate: '',
+    lastUtTestDate: ''
   });
 
   const divisionOptions = useMemo(
@@ -200,6 +208,71 @@ export default function ExtinguishersPage() {
     [formData.division, formData.subDivision, formData.zone]
   );
 
+  const nextHydraulicDueDatePreview = useMemo(() => {
+    const raw = formData.hydraulicDueDate?.trim();
+    if (!raw) return '';
+    return addYearsToIsoDate(raw.slice(0, 10), 3);
+  }, [formData.hydraulicDueDate]);
+
+  const manufacturingYearOptions = useMemo(() => {
+    const current = new Date().getFullYear();
+    const yearsFuture = 15;
+    const yearsPast = 80;
+    const newest = current + yearsFuture;
+    const oldest = current - yearsPast;
+    const years: number[] = [];
+    for (let y = newest; y >= oldest; y -= 1) years.push(y);
+    return years;
+  }, []);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem(EXTRA_TYPES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          setExtraTypeOptions(
+            parsed
+              .filter((x): x is string => typeof x === 'string')
+              .map((x) => x.trim())
+              .filter(Boolean)
+          );
+        }
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      extraTypesHydrated.current = true;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem(EXTRA_MEDIA_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          setExtraMediaOptions(
+            parsed
+              .filter((x): x is string => typeof x === 'string')
+              .map((x) => x.trim())
+              .filter(Boolean)
+          );
+        }
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      extraMediaHydrated.current = true;
+    }
+  }, []);
+
   useEffect(() => {
     const loadPlants = async () => {
       try {
@@ -217,11 +290,11 @@ export default function ExtinguishersPage() {
               division: firstHierarchy?.division ?? '',
               subDivision: firstHierarchy?.subDivision ?? '',
               zone: firstHierarchy?.zone ?? '',
-              plantOffice: firstHierarchy?.plantOffice ?? first.plantSName,
+              plantOffice: firstHierarchy?.plantOffice ?? first.plantOffice,
               plantId: String(first.id),
               companyCode: first.companyCode,
               plantCode: first.plantCode,
-              plant: first.plantSName,
+              plant: first.plantOffice,
               showStatus: first.showStatus,
               region: first.region,
               plant_unit: first.plant_unit,
@@ -257,8 +330,15 @@ export default function ExtinguishersPage() {
         const data = (await response.json()) as Extinguisher[];
         setExtinguishers(data);
         setCurrentPage(1);
+        if (data.some((e) => Boolean(e.inspectionPending))) {
+          void fetch('/api/extinguishers/inspection-pending-notify', { method: 'POST' }).catch(() => {
+            /* non-blocking */
+          });
+        }
       } catch (error) {
         console.error('Failed to fetch extinguisher records', error);
+        setToastMessage('Could not load extinguisher list. Please refresh.');
+        setToastIsError(true);
       } finally {
         setLoading(false);
       }
@@ -311,37 +391,19 @@ export default function ExtinguishersPage() {
       if (ok) {
         setDeleteConfirmExt(null);
         setToastMessage(`Extinguisher "${ext.id}" deleted successfully.`);
+        setToastIsError(false);
+      } else {
+        setToastMessage('Delete failed. Please try again.');
+        setToastIsError(true);
       }
     } finally {
       setDeleteDialogBusy(false);
     }
   };
 
-  const handleReportEmptyCylinder = async (ext: Extinguisher) => {
-    setEmptyReportBusy(true);
-    try {
-      const reporter = buildIssueReporterPayload(
-        typeof window !== 'undefined' ? window.localStorage.getItem('nuvoco-current-user') : null,
-        'Dashboard user'
-      );
-      const mailto = buildEmptyCylinderMailto(
-        ext,
-        reporter.reportedBy,
-        reporter.reporterEmail,
-        'Cylinder reported empty (equipment register / QR view).'
-      );
-      window.location.href = mailto;
-      setToastMessage('Mail draft opened in your email app. Review details and click Send.');
-    } catch {
-      setToastMessage('Could not open mail app. Please check default mail app settings.');
-    } finally {
-      setEmptyReportBusy(false);
-    }
-  };
-
   useEffect(() => {
     if (!mounted) return;
-    const hasOpenModal = isModalOpen || Boolean(selectedQR) || Boolean(deleteConfirmExt);
+    const hasOpenModal = isModalOpen || Boolean(deleteConfirmExt);
     if (hasOpenModal) {
       document.body.classList.add('modal-open-extinguishers');
     } else {
@@ -350,37 +412,199 @@ export default function ExtinguishersPage() {
     return () => {
       document.body.classList.remove('modal-open-extinguishers');
     };
-  }, [isModalOpen, selectedQR, deleteConfirmExt, mounted]);
+  }, [isModalOpen, deleteConfirmExt, mounted]);
 
   useEffect(() => {
-    if (!toastMessage) return;
-    const timer = window.setTimeout(() => setToastMessage(''), 3500);
+    if (!toastMessage) {
+      setToastIsError(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setToastMessage('');
+      setToastIsError(false);
+    }, 3500);
     return () => window.clearTimeout(timer);
   }, [toastMessage]);
+
+  const normalizeOptionKey = (s: string) => s.trim().toUpperCase();
+
+  const handleAddCustomType = () => {
+    const raw = formData.typeOther.trim();
+    if (!raw) {
+      setToastMessage('Enter a type name before adding.');
+      setToastIsError(true);
+      return;
+    }
+    if (normalizeOptionKey(raw) === normalizeOptionKey(TYPE_OTHERS_VALUE)) {
+      setToastMessage('Choose a different type name.');
+      setToastIsError(true);
+      return;
+    }
+    const key = normalizeOptionKey(raw);
+    const exists =
+      BASE_TYPE_OPTIONS.some((b) => normalizeOptionKey(b) === key) ||
+      extraTypeOptions.some((x) => normalizeOptionKey(x) === key);
+    if (exists) {
+      setToastMessage('That type is already in the list.');
+      setToastIsError(true);
+      return;
+    }
+    const nextExtras = [...extraTypeOptions, raw].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' })
+    );
+    setExtraTypeOptions(nextExtras);
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(EXTRA_TYPES_STORAGE_KEY, JSON.stringify(nextExtras));
+      }
+    } catch {
+      /* ignore */
+    }
+    setFormData((prev) => ({ ...prev, typeSelect: raw, typeOther: '' }));
+    setToastMessage('Type added to the dropdown list.');
+    setToastIsError(false);
+  };
+
+  const handleAddCustomMedia = () => {
+    const raw = formData.mediaOther.trim();
+    if (!raw) {
+      setToastMessage('Enter a media name before adding.');
+      setToastIsError(true);
+      return;
+    }
+    if (normalizeOptionKey(raw) === normalizeOptionKey(TYPE_OTHERS_VALUE)) {
+      setToastMessage('Choose a different media name.');
+      setToastIsError(true);
+      return;
+    }
+    const key = normalizeOptionKey(raw);
+    const exists =
+      BASE_MEDIA_OPTIONS.some((b) => normalizeOptionKey(b) === key) ||
+      extraMediaOptions.some((x) => normalizeOptionKey(x) === key);
+    if (exists) {
+      setToastMessage('That media is already in the list.');
+      setToastIsError(true);
+      return;
+    }
+    const nextExtras = [...extraMediaOptions, raw].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' })
+    );
+    setExtraMediaOptions(nextExtras);
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(EXTRA_MEDIA_STORAGE_KEY, JSON.stringify(nextExtras));
+      }
+    } catch {
+      /* ignore */
+    }
+    setFormData((prev) => ({ ...prev, mediaSelect: raw, mediaOther: '' }));
+    setToastMessage('Media added to the dropdown list.');
+    setToastIsError(false);
+  };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    const hydraulicNorm = formData.hydraulicDueDate?.trim().slice(0, 10) ?? '';
+    if (!hydraulicNorm) {
+      setToastMessage('Hydraulic test due is required.');
+      setToastIsError(true);
+      return;
+    }
+    const nextUtTestDate = addYearsToIsoDate(hydraulicNorm, 3);
+
+    let resolvedType = '';
+    if (formData.typeSelect === TYPE_OTHERS_VALUE) {
+      resolvedType = formData.typeOther.trim();
+      if (!resolvedType) {
+        setToastMessage('Enter the type text when Others is selected.');
+        setToastIsError(true);
+        return;
+      }
+    } else {
+      resolvedType = formData.typeSelect;
+    }
+
+    let resolvedMedia = '';
+    if (formData.mediaSelect === TYPE_OTHERS_VALUE) {
+      resolvedMedia = formData.mediaOther.trim();
+      if (!resolvedMedia) {
+        setToastMessage('Enter the media text when Others is selected.');
+        setToastIsError(true);
+        return;
+      }
+    } else {
+      resolvedMedia = formData.mediaSelect;
+    }
+
+    const { typeSelect: _ts, typeOther: _to, mediaSelect: _ms, mediaOther: _mo, ...formRest } = formData;
+
+    const lastUtForSave = (formData.lastUtTestDate || formData.manufacturingDate).trim().slice(0, 10);
+
     const newExtinguisher: Extinguisher = {
-      ...formData,
+      ...formRest,
+      type: resolvedType,
+      media: resolvedMedia,
       plantId: formData.plantId ? Number(formData.plantId) : null,
       id: formData.id.trim().toUpperCase(),
-      hydraulicDueDate: formData.hydraulicDueDate?.trim() || null,
+      lastUtTestDate: lastUtForSave,
+      nextUtTestDate,
+      hydraulicDueDate: hydraulicNorm,
       installedBy: 'nuvoco\\admin', // Mock LDAP user from session
       installedDate: new Date().toISOString()
     };
 
+    const patchPayload = {
+      division: formRest.division,
+      subDivision: formRest.subDivision,
+      zone: formRest.zone,
+      plantOffice: formRest.plantOffice,
+      plantId: formData.plantId ? Number(formData.plantId) : null,
+      companyCode: formRest.companyCode,
+      plantCode: formRest.plantCode,
+      plant: formRest.plant,
+      showStatus: formRest.showStatus,
+      region: formRest.region,
+      plant_unit: formRest.plant_unit,
+      cluster: formRest.cluster,
+      company_name: formRest.company_name,
+      make: formRest.make,
+      type: resolvedType,
+      media: resolvedMedia,
+      capacity: formRest.capacity,
+      locationWithElevation: formRest.locationWithElevation,
+      lastUtTestDate: lastUtForSave,
+      manufacturingDate: formData.manufacturingDate,
+      nextUtTestDate,
+      hydraulicDueDate: hydraulicNorm,
+    };
+
     try {
-      const response = await fetch('/api/extinguishers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newExtinguisher),
-      });
+      const isEdit = Boolean(editingExtinguisherId);
+      const response = await fetch(
+        isEdit
+          ? `/api/extinguishers/${encodeURIComponent(editingExtinguisherId!)}`
+          : '/api/extinguishers',
+        {
+          method: isEdit ? 'PATCH' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(isEdit ? patchPayload : newExtinguisher),
+        }
+      );
       if (!response.ok) {
-        throw new Error('Failed to save extinguisher');
+        let message = isEdit ? 'Failed to update extinguisher' : 'Failed to save extinguisher';
+        try {
+          const payload = (await response.json()) as { message?: string };
+          if (payload.message) message = payload.message;
+        } catch {
+          /* ignore */
+        }
+        setToastMessage(message);
+        setToastIsError(true);
+        return;
       }
       const saved = (await response.json()) as Extinguisher;
-      const existingIndex = extinguishers.findIndex((ext) => ext.id === saved.id);
+      const existingIndex = extinguishers.findIndex((ex) => ex.id === saved.id);
       if (existingIndex >= 0) {
         const updated = [...extinguishers];
         updated[existingIndex] = saved;
@@ -389,10 +613,20 @@ export default function ExtinguishersPage() {
         setExtinguishers([saved, ...extinguishers]);
         setCurrentPage(1);
       }
-      setSelectedQR(saved);
-      setIsModalOpen(false);
+      if (!isEdit) {
+        setSelectedQR(saved);
+      } else if (selectedQR?.id === saved.id) {
+        setSelectedQR(saved);
+      }
+      closeRegistrationModal();
+      setToastMessage(
+        isEdit ? `Extinguisher "${saved.id}" updated.` : `Extinguisher "${saved.id}" saved. QR is ready.`
+      );
+      setToastIsError(false);
     } catch (error) {
       console.error('Failed to save extinguisher record', error);
+      setToastMessage('Could not save extinguisher. Check your connection.');
+      setToastIsError(true);
       return;
     }
     setFormData({
@@ -404,22 +638,104 @@ export default function ExtinguishersPage() {
       plantId: plantsMaster[0] ? String(plantsMaster[0].id) : '',
       companyCode: plantsMaster[0]?.companyCode ?? '',
       plantCode: plantsMaster[0]?.plantCode ?? '',
-      plant: plantsMaster[0]?.plantSName ?? '',
+      plant: plantsMaster[0]?.plantOffice ?? '',
       showStatus: plantsMaster[0]?.showStatus ?? '',
       region: plantsMaster[0]?.region ?? '',
       plant_unit: plantsMaster[0]?.plant_unit ?? '',
       cluster: plantsMaster[0]?.cluster ?? '',
       company_name: plantsMaster[0]?.company_name ?? '',
       make: '',
-      type: 'D',
-      media: 'Co2',
+      typeSelect: 'D',
+      typeOther: '',
+      mediaSelect: 'Co2',
+      mediaOther: '',
       capacity: '4.5',
       locationWithElevation: '',
-      lastUtTestDate: '',
       manufacturingDate: '',
-      nextUtTestDate: '',
-      hydraulicDueDate: ''
+      hydraulicDueDate: '',
+      lastUtTestDate: ''
     });
+  };
+
+  const closeRegistrationModal = () => {
+    setIsModalOpen(false);
+    setEditingExtinguisherId(null);
+  };
+
+  const openRegisterNewModal = () => {
+    setEditingExtinguisherId(null);
+    setFormData({
+      id: '',
+      division: locationHierarchy[0]?.division ?? '',
+      subDivision: locationHierarchy[0]?.subDivision ?? '',
+      zone: locationHierarchy[0]?.zone ?? '',
+      plantOffice: locationHierarchy[0]?.plantOffice ?? '',
+      plantId: plantsMaster[0] ? String(plantsMaster[0].id) : '',
+      companyCode: plantsMaster[0]?.companyCode ?? '',
+      plantCode: plantsMaster[0]?.plantCode ?? '',
+      plant: plantsMaster[0]?.plantOffice ?? '',
+      showStatus: plantsMaster[0]?.showStatus ?? '',
+      region: plantsMaster[0]?.region ?? '',
+      plant_unit: plantsMaster[0]?.plant_unit ?? '',
+      cluster: plantsMaster[0]?.cluster ?? '',
+      company_name: plantsMaster[0]?.company_name ?? '',
+      make: '',
+      typeSelect: 'D',
+      typeOther: '',
+      mediaSelect: 'Co2',
+      mediaOther: '',
+      capacity: '4.5',
+      locationWithElevation: '',
+      manufacturingDate: '',
+      hydraulicDueDate: '',
+      lastUtTestDate: '',
+    });
+    setIsModalOpen(true);
+  };
+
+  const openEditExtinguisherModal = (ext: Extinguisher) => {
+    const { typeSelect, typeOther } = resolveTypeSelectForForm(ext, extraTypeOptions);
+    const { mediaSelect, mediaOther } = resolveMediaSelectForForm(ext, extraMediaOptions);
+    const lastUt =
+      ext.lastUtTestDate && !Number.isNaN(new Date(ext.lastUtTestDate).getTime())
+        ? ext.lastUtTestDate.slice(0, 10)
+        : '';
+    const mfg =
+      ext.manufacturingDate && !Number.isNaN(new Date(ext.manufacturingDate).getTime())
+        ? ext.manufacturingDate.slice(0, 10)
+        : '';
+    const hydraulic =
+      ext.hydraulicDueDate && !Number.isNaN(new Date(ext.hydraulicDueDate).getTime())
+        ? ext.hydraulicDueDate.slice(0, 10)
+        : '';
+    setFormData({
+      id: ext.id,
+      division: ext.division ?? '',
+      subDivision: ext.subDivision ?? '',
+      zone: ext.zone ?? '',
+      plantOffice: ext.plantOffice ?? '',
+      plantId: ext.plantId != null ? String(ext.plantId) : '',
+      companyCode: ext.companyCode ?? '',
+      plantCode: ext.plantCode ?? '',
+      plant: ext.plant ?? '',
+      showStatus: ext.showStatus ?? '',
+      region: ext.region ?? '',
+      plant_unit: ext.plant_unit ?? '',
+      cluster: ext.cluster ?? '',
+      company_name: ext.company_name ?? '',
+      make: ext.make ?? '',
+      typeSelect,
+      typeOther,
+      mediaSelect,
+      mediaOther,
+      capacity: ext.capacity ?? '',
+      locationWithElevation: ext.locationWithElevation ?? '',
+      manufacturingDate: mfg,
+      hydraulicDueDate: hydraulic,
+      lastUtTestDate: lastUt || mfg,
+    });
+    setEditingExtinguisherId(ext.id);
+    setIsModalOpen(true);
   };
 
   return (
@@ -453,7 +769,7 @@ export default function ExtinguishersPage() {
             />
             Show archived
           </label>
-          <button className="btn btn-primary" onClick={() => setIsModalOpen(true)}>
+          <button type="button" className="btn btn-primary" onClick={() => openRegisterNewModal()}>
             <Plus size={18} /> Register New
           </button>
         </div>
@@ -471,11 +787,38 @@ export default function ExtinguishersPage() {
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Capacity</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Location with Elevation</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Last UT test Date</th>
-              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Manufacturing Date</th>
-              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Next UT test</th>
+              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Manufacturing year</th>
+              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Hydraulic test due Date</th>
               <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Hydraulic due</th>
-              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>QR code</th>
-              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)' }}>Archive</th>
+              <th
+                style={{
+                  padding: '1rem',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)',
+                  position: 'sticky',
+                  top: 0,
+                  zIndex: 2,
+                  backgroundColor: 'var(--bg-main)',
+                  lineHeight: 1.35,
+                }}
+              >
+                Inspection
+                <span
+                  style={{
+                    display: 'block',
+                    fontWeight: 500,
+                    fontSize: '0.72rem',
+                    color: 'var(--text-muted)',
+                    marginTop: 4,
+                  }}
+                >
+                  pending if none in 3 months
+                </span>
+              </th>
+              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)', whiteSpace: 'nowrap' }}>QR code</th>
+              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)', whiteSpace: 'nowrap' }}>Edit</th>
+              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)', whiteSpace: 'nowrap' }}>Archive</th>
+              <th style={{ padding: '1rem', fontWeight: 600, color: 'var(--text-secondary)', position: 'sticky', top: 0, zIndex: 2, backgroundColor: 'var(--bg-main)', whiteSpace: 'nowrap' }}>Delete</th>
             </tr>
           </thead>
           <tbody>
@@ -501,7 +844,7 @@ export default function ExtinguishersPage() {
                 <td style={{ padding: '1rem' }}>{ext.capacity}</td>
                 <td style={{ padding: '1rem' }}>{ext.locationWithElevation}</td>
                 <td style={{ padding: '1rem' }}>{new Date(ext.lastUtTestDate).toLocaleDateString('en-GB')}</td>
-                <td style={{ padding: '1rem' }}>{new Date(ext.manufacturingDate).toLocaleDateString('en-GB')}</td>
+                <td style={{ padding: '1rem' }}>{formatManufacturingYear(ext.manufacturingDate)}</td>
                 <td
                   style={{
                     padding: '1rem',
@@ -536,68 +879,147 @@ export default function ExtinguishersPage() {
                     ? new Date(ext.hydraulicDueDate).toLocaleDateString('en-GB')
                     : '—'}
                 </td>
-                <td style={{ padding: '1rem' }}>
-                  <button 
-                    className="btn btn-outline" 
+                <td style={{ padding: '1rem', verticalAlign: 'top' }}>
+                  {ext.archivedAt ? (
+                    <span style={{ color: 'var(--text-muted)' }}>—</span>
+                  ) : ext.inspectionPending ? (
+                    <div>
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          fontWeight: 700,
+                          fontSize: '0.78rem',
+                          color: '#B45309',
+                          background: 'rgba(180, 83, 9, 0.12)',
+                          borderRadius: 6,
+                          padding: '0.2rem 0.45rem',
+                        }}
+                      >
+                        Inspection pending
+                      </span>
+                      {ext.lastInspectionAt ? (
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                          Last: {new Date(ext.lastInspectionAt).toLocaleDateString('en-GB')}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                          No inspection on record
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <span style={{ fontSize: '0.82rem', color: '#065F46', fontWeight: 600 }}>Up to date</span>
+                      {ext.lastInspectionAt ? (
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                          Last: {new Date(ext.lastInspectionAt).toLocaleDateString('en-GB')}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                          New install (within 3 mo.)
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </td>
+                <td style={{ padding: '1rem', verticalAlign: 'middle' }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
                     style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
                     onClick={() => setSelectedQR(ext)}
                   >
                     <QRIcon size={16} /> View QR
                   </button>
                 </td>
-                <td style={{ padding: '1rem' }}>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {!ext.archivedAt ? (
-                      <button
-                        type="button"
-                        className="btn btn-outline"
-                        style={{ padding: '0.35rem 0.55rem', fontSize: '0.75rem' }}
-                        disabled={archiveBusyId === ext.id}
-                        title="Hide from active list"
-                        onClick={() => callArchiveApi(ext.id, 'archive')}
-                      >
-                        <Archive size={14} /> Archive
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="btn btn-outline"
-                        style={{ padding: '0.35rem 0.55rem', fontSize: '0.75rem' }}
-                        disabled={archiveBusyId === ext.id}
-                        onClick={() => callArchiveApi(ext.id, 'restore')}
-                      >
-                        <RotateCcw size={14} /> Restore
-                      </button>
-                    )}
+                <td style={{ padding: '1rem', verticalAlign: 'middle' }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    style={{ padding: '0.35rem 0.55rem', fontSize: '0.75rem' }}
+                    disabled={archiveBusyId === ext.id}
+                    title="Edit all fields"
+                    onClick={() => openEditExtinguisherModal(ext)}
+                  >
+                    <Pencil size={14} /> Edit
+                  </button>
+                </td>
+                <td style={{ padding: '1rem', verticalAlign: 'middle' }}>
+                  {!ext.archivedAt ? (
                     <button
                       type="button"
                       className="btn btn-outline"
-                      style={{
-                        padding: '0.35rem 0.55rem',
-                        fontSize: '0.75rem',
-                        borderColor: 'rgba(230,57,70,0.35)',
-                        color: '#B91C1C',
-                      }}
+                      style={{ padding: '0.35rem 0.55rem', fontSize: '0.75rem' }}
                       disabled={archiveBusyId === ext.id}
-                      title="Permanently delete this record"
-                      onClick={() => setDeleteConfirmExt(ext)}
+                      title="Hide from active list"
+                      onClick={() =>
+                        void (async () => {
+                          const ok = await callArchiveApi(ext.id, 'archive');
+                          if (ok) {
+                            setToastMessage(`Extinguisher "${ext.id}" archived.`);
+                            setToastIsError(false);
+                          } else {
+                            setToastMessage('Archive failed. Please try again.');
+                            setToastIsError(true);
+                          }
+                        })()
+                      }
                     >
-                      <Trash2 size={14} /> Delete
+                      <Archive size={14} /> Archive
                     </button>
-                  </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      style={{ padding: '0.35rem 0.55rem', fontSize: '0.75rem' }}
+                      disabled={archiveBusyId === ext.id}
+                      title="Return to active list"
+                      onClick={() =>
+                        void (async () => {
+                          const ok = await callArchiveApi(ext.id, 'restore');
+                          if (ok) {
+                            setToastMessage(`Extinguisher "${ext.id}" restored.`);
+                            setToastIsError(false);
+                          } else {
+                            setToastMessage('Restore failed. Please try again.');
+                            setToastIsError(true);
+                          }
+                        })()
+                      }
+                    >
+                      <RotateCcw size={14} /> Restore
+                    </button>
+                  )}
+                </td>
+                <td style={{ padding: '1rem', verticalAlign: 'middle' }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    style={{
+                      padding: '0.35rem 0.55rem',
+                      fontSize: '0.75rem',
+                      borderColor: 'rgba(230,57,70,0.35)',
+                      color: '#B91C1C',
+                    }}
+                    disabled={archiveBusyId === ext.id}
+                    title="Permanently delete this record"
+                    onClick={() => setDeleteConfirmExt(ext)}
+                  >
+                    <Trash2 size={14} /> Delete
+                  </button>
                 </td>
               </tr>
             ))}
             {loading && (
               <tr>
-                <td colSpan={13} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                <td colSpan={16} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                   Loading extinguisher records...
                 </td>
               </tr>
             )}
             {!loading && extinguishers.length === 0 && (
               <tr>
-                <td colSpan={13} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                <td colSpan={16} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                   No extinguishers registered yet.
                 </td>
               </tr>
@@ -658,9 +1080,12 @@ export default function ExtinguishersPage() {
             style={{ width: '100%', maxWidth: '560px', maxHeight: '90vh', backgroundColor: 'white', borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(0,122,83,0.18)', boxShadow: '0 24px 60px rgba(11,27,43,0.26)', display: 'flex', flexDirection: 'column' }}
           >
             <div className="flex-between modal-header" style={{ padding: '0.95rem 1rem', borderBottom: '1px solid rgba(255,255,255,0.2)', background: 'linear-gradient(135deg, var(--color-secondary), var(--color-primary))', color: 'white' }}>
-              <h2 style={{ fontSize: '1rem', margin: 0, fontWeight: 700 }}>Register Extinguisher</h2>
+              <h2 style={{ fontSize: '1rem', margin: 0, fontWeight: 700 }}>
+                {editingExtinguisherId ? 'Edit extinguisher' : 'Register Extinguisher'}
+              </h2>
               <button
-                onClick={() => setIsModalOpen(false)}
+                type="button"
+                onClick={() => closeRegistrationModal()}
                 className="modal-close"
                 style={{
                   background: 'rgba(255,255,255,0.16)',
@@ -682,121 +1107,146 @@ export default function ExtinguishersPage() {
             
             <form onSubmit={handleRegister} style={{ padding: '1rem', overflowY: 'auto' }}>
               <div className="form-grid">
-                <div className="form-group">
-                  <label className="input-label">Division</label>
-                  <select
-                    className="input-field"
-                    value={formData.division}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        division: e.target.value,
-                        subDivision: '',
-                        zone: '',
-                        plantOffice: '',
-                      })
-                    }
-                    required
-                  >
-                    <option value="">Select Division</option>
-                    {divisionOptions.map((division) => (
-                      <option key={division} value={division}>
-                        {division}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="input-label">Sub Division</label>
-                  <select
-                    className="input-field"
-                    value={formData.subDivision}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        subDivision: e.target.value,
-                        zone: '',
-                        plantOffice: '',
-                      })
-                    }
-                    required
-                  >
-                    <option value="">Select Sub Division</option>
-                    {subDivisionOptions.map((subDivision) => (
-                      <option key={subDivision} value={subDivision}>
-                        {subDivision}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="input-label">Zone</label>
-                  <select
-                    className="input-field"
-                    value={formData.zone}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        zone: e.target.value,
-                        plantOffice: '',
-                      })
-                    }
-                    required
-                  >
-                    <option value="">Select Zone</option>
-                    {zoneOptions.map((zone) => (
-                      <option key={zone} value={zone}>
-                        {zone}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="input-label">Plant/Office</label>
-                  <select
-                    className="input-field"
-                    value={formData.plantOffice}
-                    onChange={(e) => {
-                      const plantOffice = e.target.value;
-                      const masterMatch = plantsMaster.find(
-                        (p) =>
-                          plantOffice.toLowerCase().includes(p.plantSName.toLowerCase()) ||
-                          p.plantSName.toLowerCase().includes(plantOffice.toLowerCase())
-                      );
-                      setFormData({
-                        ...formData,
-                        plantOffice,
-                        plant: plantOffice,
-                        plantId: masterMatch ? String(masterMatch.id) : '',
-                        companyCode: masterMatch?.companyCode ?? formData.companyCode,
-                        plantCode: masterMatch?.plantCode ?? formData.plantCode,
-                        showStatus: masterMatch?.showStatus ?? formData.showStatus,
-                        region: masterMatch?.region ?? formData.region,
-                        plant_unit: masterMatch?.plant_unit ?? formData.plant_unit,
-                        cluster: masterMatch?.cluster ?? formData.cluster,
-                        company_name: masterMatch?.company_name ?? formData.company_name,
-                      });
+                {editingExtinguisherId ? (
+                  <p
+                    style={{
+                      gridColumn: '1 / -1',
+                      margin: '0 0 0.5rem',
+                      fontSize: '0.82rem',
+                      color: 'var(--text-secondary)',
+                      lineHeight: 1.45,
                     }}
-                    required
                   >
-                    <option value="">Select Plant/Office</option>
-                    {plantOfficeOptions.map((plantOffice) => (
-                      <option key={plantOffice} value={plantOffice}>
-                        {plantOffice}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                    Only table columns are editable here: plant, make, type, media, capacity, location, UT and
+                    manufacturing dates, and hydraulic due. Division / sub-division / zone / plant-office hierarchy is
+                    unchanged; register a new extinguisher if you need to change that structure.
+                  </p>
+                ) : null}
+                {!editingExtinguisherId ? (
+                  <>
+                    <div className="form-group">
+                      <label className="input-label">Division</label>
+                      <select
+                        className="input-field"
+                        value={formData.division}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            division: e.target.value,
+                            subDivision: '',
+                            zone: '',
+                            plantOffice: '',
+                          })
+                        }
+                        required
+                      >
+                        <option value="">Select Division</option>
+                        {divisionOptions.map((division) => (
+                          <option key={division} value={division}>
+                            {division}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="input-label">Sub Division</label>
+                      <select
+                        className="input-field"
+                        value={formData.subDivision}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            subDivision: e.target.value,
+                            zone: '',
+                            plantOffice: '',
+                          })
+                        }
+                        required
+                      >
+                        <option value="">Select Sub Division</option>
+                        {subDivisionOptions.map((subDivision) => (
+                          <option key={subDivision} value={subDivision}>
+                            {subDivision}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="input-label">Zone</label>
+                      <select
+                        className="input-field"
+                        value={formData.zone}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            zone: e.target.value,
+                            plantOffice: '',
+                          })
+                        }
+                        required
+                      >
+                        <option value="">Select Zone</option>
+                        {zoneOptions.map((zone) => (
+                          <option key={zone} value={zone}>
+                            {zone}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="input-label">Plant/Office</label>
+                      <select
+                        className="input-field"
+                        value={formData.plantOffice}
+                        onChange={(e) => {
+                          const plantOffice = e.target.value;
+                          const masterMatch = plantsMaster.find(
+                            (p) => p.plantOffice.toLowerCase() === plantOffice.toLowerCase()
+                          );
+                          setFormData({
+                            ...formData,
+                            plantOffice,
+                            plant: plantOffice,
+                            plantId: masterMatch ? String(masterMatch.id) : '',
+                            companyCode: masterMatch?.companyCode ?? formData.companyCode,
+                            plantCode: masterMatch?.plantCode ?? formData.plantCode,
+                            showStatus: masterMatch?.showStatus ?? formData.showStatus,
+                            region: masterMatch?.region ?? formData.region,
+                            plant_unit: masterMatch?.plant_unit ?? formData.plant_unit,
+                            cluster: masterMatch?.cluster ?? formData.cluster,
+                            company_name: masterMatch?.company_name ?? formData.company_name,
+                          });
+                        }}
+                        required
+                      >
+                        <option value="">Select Plant/Office</option>
+                        {plantOfficeOptions.map((plantOffice) => (
+                          <option key={plantOffice} value={plantOffice}>
+                            {plantOffice}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                ) : null}
                 <div className="form-group">
                   <label className="input-label">Unique Serial Number</label>
                   <input
                     type="text"
                     className="input-field"
                     value={formData.id}
-                    onChange={e => setFormData({ ...formData, id: e.target.value })}
+                    onChange={(e) => setFormData({ ...formData, id: e.target.value })}
                     required
                     placeholder="e.g. KCP01"
+                    autoComplete="off"
+                    readOnly={Boolean(editingExtinguisherId)}
+                    style={editingExtinguisherId ? { background: 'var(--bg-main)', cursor: 'not-allowed' } : undefined}
                   />
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    {editingExtinguisherId
+                      ? 'Unique serial cannot be changed here. To use a new ID, delete or archive this record and register a new one.'
+                      : 'Must be unique — each serial can only be registered once (including archived records).'}
+                  </p>
                 </div>
                 <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                   <label className="input-label">Plant</label>
@@ -810,7 +1260,7 @@ export default function ExtinguishersPage() {
                         plantId: e.target.value,
                         companyCode: selected?.companyCode ?? '',
                         plantCode: selected?.plantCode ?? '',
-                        plant: selected?.plantSName ?? '',
+                        plant: selected?.plantOffice ?? '',
                         showStatus: selected?.showStatus ?? '',
                         region: selected?.region ?? '',
                         plant_unit: selected?.plant_unit ?? '',
@@ -823,7 +1273,7 @@ export default function ExtinguishersPage() {
                     {plantsMaster.length === 0 && <option value="">No plant master data</option>}
                     {plantsMaster.map((plant) => (
                       <option key={plant.id} value={plant.id}>
-                        {plant.plantSName} ({plant.companyCode}/{plant.plantCode})
+                        {plant.plantOffice} ({plant.companyCode}/{plant.plantCode})
                       </option>
                     ))}
                   </select>
@@ -834,23 +1284,130 @@ export default function ExtinguishersPage() {
                 </div>
                 <div className="form-group">
                   <label className="input-label">Type</label>
-                  <select className="input-field" value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>
-                    <option value="D">D</option>
-                    <option value="ABC">ABC</option>
-                    <option value="BC">BC</option>
-                    <option value="CO2">CO2</option>
-                    <option value="Water">Water</option>
-                    <option value="Foam">Foam</option>
+                  <select
+                    className="input-field"
+                    value={formData.typeSelect}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        typeSelect: e.target.value,
+                        typeOther: e.target.value === TYPE_OTHERS_VALUE ? formData.typeOther : '',
+                      })
+                    }
+                    required
+                  >
+                    {BASE_TYPE_OPTIONS.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                    {FIRE_CLASS_TYPE_OPTIONS.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                    {extraTypeOptions.map((v) => (
+                      <option key={`extra-${v}`} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                    <option value={TYPE_OTHERS_VALUE}>Others</option>
                   </select>
+                  {formData.typeSelect === TYPE_OTHERS_VALUE ? (
+                    <div style={{ marginTop: '0.65rem', display: 'flex', gap: '0.5rem', alignItems: 'stretch', flexWrap: 'wrap' }}>
+                      <input
+                        type="text"
+                        className="input-field"
+                        style={{ flex: '1 1 160px', minWidth: 0 }}
+                        value={formData.typeOther}
+                        onChange={(e) => setFormData({ ...formData, typeOther: e.target.value })}
+                        placeholder="Enter type, then Add — appears in list above"
+                        required
+                        aria-label="Custom type when Others is selected"
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => void handleAddCustomType()}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '0.5rem 0.9rem',
+                          whiteSpace: 'nowrap',
+                        }}
+                        aria-label="Add type to dropdown list"
+                      >
+                        <Plus size={16} aria-hidden />
+                        Add
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="form-group">
                   <label className="input-label">Media</label>
-                  <select className="input-field" value={formData.media} onChange={e => setFormData({...formData, media: e.target.value})}>
-                    <option value="Co2">Co2</option>
-                    <option value="DCP">DCP</option>
-                    <option value="Foam">Foam</option>
-                    <option value="Water">Water</option>
+                  <select
+                    className="input-field"
+                    value={formData.mediaSelect}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        mediaSelect: e.target.value,
+                        mediaOther: e.target.value === TYPE_OTHERS_VALUE ? formData.mediaOther : '',
+                      })
+                    }
+                    required
+                  >
+                    {BASE_MEDIA_OPTIONS.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                    {extraMediaOptions.map((v) => (
+                      <option key={`media-extra-${v}`} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                    <option value={TYPE_OTHERS_VALUE}>Others</option>
                   </select>
+                  {formData.mediaSelect === TYPE_OTHERS_VALUE ? (
+                    <div
+                      style={{
+                        marginTop: '0.65rem',
+                        display: 'flex',
+                        gap: '0.5rem',
+                        alignItems: 'stretch',
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <input
+                        type="text"
+                        className="input-field"
+                        style={{ flex: '1 1 160px', minWidth: 0 }}
+                        value={formData.mediaOther}
+                        onChange={(e) => setFormData({ ...formData, mediaOther: e.target.value })}
+                        placeholder="Enter media, then Add — appears in list above"
+                        required
+                        aria-label="Custom media when Others is selected"
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => void handleAddCustomMedia()}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '0.5rem 0.9rem',
+                          whiteSpace: 'nowrap',
+                        }}
+                        aria-label="Add media to dropdown list"
+                      >
+                        <Plus size={16} aria-hidden />
+                        Add
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="form-group">
                   <label className="input-label">Capacity</label>
@@ -861,31 +1418,85 @@ export default function ExtinguishersPage() {
                   <input type="text" className="input-field" value={formData.locationWithElevation} onChange={e => setFormData({...formData, locationWithElevation: e.target.value})} required placeholder="e.g. CCR first floor" />
                 </div>
                 <div className="form-group">
-                  <label className="input-label">Last UT test Date</label>
-                  <input type="date" className="input-field" value={formData.lastUtTestDate} onChange={e => setFormData({...formData, lastUtTestDate: e.target.value})} required />
-                </div>
-                <div className="form-group">
-                  <label className="input-label">Manufacturing Date</label>
-                  <input type="date" className="input-field" value={formData.manufacturingDate} onChange={e => setFormData({...formData, manufacturingDate: e.target.value})} required />
-                </div>
-                <div className="form-group">
-                  <label className="input-label">Next UT test</label>
-                  <input type="date" className="input-field" value={formData.nextUtTestDate} onChange={e => setFormData({...formData, nextUtTestDate: e.target.value})} required />
-                </div>
-                <div className="form-group">
-                  <label className="input-label">Hydraulic test due (optional)</label>
+                  <label className="input-label">Hydraulic test due</label>
                   <input
                     type="date"
                     className="input-field"
                     value={formData.hydraulicDueDate}
                     onChange={(e) => setFormData({ ...formData, hydraulicDueDate: e.target.value })}
+                    required
                   />
+                </div>
+                <div className="form-group">
+                  <label className="input-label">Manufacturing year</label>
+                  <select
+                    className="input-field"
+                    value={formData.manufacturingDate ? formData.manufacturingDate.slice(0, 4) : ''}
+                    onChange={(e) => {
+                      const y = e.target.value;
+                      setFormData({
+                        ...formData,
+                        manufacturingDate: y ? `${y}-01-01` : '',
+                      });
+                    }}
+                    required
+                  >
+                    <option value="">Select year</option>
+                    {manufacturingYearOptions.map((y) => (
+                      <option key={y} value={String(y)}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="input-label">Last UT test date</label>
+                  <input
+                    type="date"
+                    className="input-field"
+                    value={formData.lastUtTestDate ? formData.lastUtTestDate.slice(0, 10) : ''}
+                    onChange={(e) =>
+                      setFormData({ ...formData, lastUtTestDate: e.target.value ? `${e.target.value}` : '' })
+                    }
+                    aria-label="Last UT test date"
+                  />
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                    If left blank on new equipment, the manufacturing year start date is used when you save. Edit to set
+                    the exact UT test date.
+                  </p>
+                </div>
+                <div className="form-group">
+                  <label className="input-label">Hydraulic test due Date</label>
+                  <input
+                    type="text"
+                    readOnly
+                    className="input-field"
+                    style={{ background: 'var(--bg-main)', cursor: 'default' }}
+                    value={
+                      nextHydraulicDueDatePreview
+                        ? new Date(`${nextHydraulicDueDatePreview}T12:00:00Z`).toLocaleDateString('en-GB')
+                        : '—'
+                    }
+                    aria-readonly
+                  />
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Set automatically to 3 years after Hydraulic test due.
+                  </p>
                 </div>
               </div>
 
               <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
-                <button type="button" className="btn" style={{ backgroundColor: 'var(--bg-main)' }} onClick={() => setIsModalOpen(false)}>Cancel</button>
-                <button type="submit" className="btn btn-fire">Save & Generate QR</button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ backgroundColor: 'var(--bg-main)' }}
+                  onClick={() => closeRegistrationModal()}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-fire">
+                  {editingExtinguisherId ? 'Save changes' : 'Save & Generate QR'}
+                </button>
               </div>
             </form>
           </motion.div>
@@ -893,141 +1504,15 @@ export default function ExtinguishersPage() {
         document.body
       )}
 
-      {/* QR Code Modal */}
-      {selectedQR && mounted && createPortal(
-        <div className="modal-shell" style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(11,27,43,0.58)', zIndex: 9999,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem',
-          backdropFilter: 'blur(6px)'
-        }}>
-          <motion.div 
-            initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-            className="card modal-card" style={{ width: '100%', maxWidth: '390px', maxHeight: '90vh', backgroundColor: 'white', overflow: 'hidden', borderRadius: 16, border: '1px solid rgba(0,122,83,0.18)', boxShadow: '0 24px 60px rgba(11,27,43,0.26)', display: 'flex', flexDirection: 'column' }}
-          >
-            <div className="modal-header" style={{ background: 'linear-gradient(135deg, var(--color-secondary), var(--color-primary))', color: 'white', padding: '0.95rem 1rem', textAlign: 'center', position: 'relative' }}>
-              <button 
-                onClick={() => setSelectedQR(null)} 
-                className="modal-close"
-                style={{
-                  position: 'absolute',
-                  right: '0.7rem',
-                  top: '0.6rem',
-                  background: 'rgba(255,255,255,0.16)',
-                  border: '1px solid rgba(255,255,255,0.34)',
-                  color: 'white',
-                  cursor: 'pointer',
-                  width: 30,
-                  height: 30,
-                  borderRadius: 999,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-                aria-label="Close QR modal"
-              >
-                <X size={16} />
-              </button>
-              <h2 style={{ fontSize: '1rem', margin: 0, fontWeight: 700 }}>Equipment QR Label</h2>
-              <p style={{ opacity: 0.8, fontSize: '0.875rem', marginTop: '0.25rem' }}>Scan to view details</p>
-            </div>
-            
-            <div style={{ padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.5rem', overflowY: 'auto' }}>
-              <div style={{ padding: '1rem', background: 'white', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border-color)' }}>
-                {/* Encodes the full saved record so scan page can show all fields. */}
-                <QRCode 
-                  value={buildQrValue(selectedQR)}
-                  size={200} 
-                  level="M"
-                  fgColor="var(--text-primary)"
-                />
-              </div>
-              
-              <div style={{ width: '100%', borderTop: '1px dashed var(--border-color)', paddingTop: '1.5rem' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', fontSize: '0.875rem' }}>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Unique Serial Number</span>
-                    <strong style={{ color: 'var(--color-primary)' }}>{selectedQR.id}</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Plant</span>
-                    <strong>{selectedQR.plant}</strong>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                      {selectedQR.companyCode} / {selectedQR.plantCode}
-                    </div>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Make</span>
-                    <strong>{selectedQR.make}</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Type</span>
-                    <strong>{selectedQR.type}</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Media</span>
-                    <strong>{selectedQR.media}</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Capacity</span>
-                    <strong>{selectedQR.capacity}</strong>
-                  </div>
-                  <div style={{ gridColumn: '1 / -1' }}>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Location with Elevation</span>
-                    <strong>{selectedQR.locationWithElevation}</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Last UT test</span>
-                    <strong>{new Date(selectedQR.lastUtTestDate).toLocaleDateString('en-GB')}</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Manufacturing Date</span>
-                    <strong>{new Date(selectedQR.manufacturingDate).toLocaleDateString('en-GB')}</strong>
-                  </div>
-                  <div style={{ gridColumn: '1 / -1' }}>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Next UT test</span>
-                    <strong>{new Date(selectedQR.nextUtTestDate).toLocaleDateString('en-GB')}</strong>
-                  </div>
-                  <div style={{ gridColumn: '1 / -1' }}>
-                    <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.75rem' }}>Hydraulic test due</span>
-                    <strong>
-                      {selectedQR.hydraulicDueDate
-                        ? new Date(selectedQR.hydraulicDueDate).toLocaleDateString('en-GB')
-                        : '—'}
-                    </strong>
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ width: '100%', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  style={{
-                    width: '100%',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 8,
-                    borderColor: 'rgba(217, 119, 6, 0.45)',
-                    color: '#B45309',
-                  }}
-                  disabled={emptyReportBusy}
-                  onClick={() => void handleReportEmptyCylinder(selectedQR)}
-                >
-                  <AlertTriangle size={16} />
-                  {emptyReportBusy ? 'Sending report…' : 'Report empty cylinder'}
-                </button>
-                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.5rem', textAlign: 'center', lineHeight: 1.35 }}>
-                  Opens your default mail app with prefilled report details for this extinguisher.
-                </p>
-              </div>
-              
-            </div>
-          </motion.div>
-        </div>,
-        document.body
-      )}
+      <ExtinguisherQrViewModal
+        ext={selectedQR}
+        onClose={() => setSelectedQR(null)}
+        onToast={(message, isError) => {
+          setToastMessage(message);
+          setToastIsError(isError);
+        }}
+        onInspectionSaved={handleQrInspectionSaved}
+      />
       {deleteConfirmExt && mounted && createPortal(
         <div
           role="dialog"
@@ -1108,26 +1593,34 @@ export default function ExtinguishersPage() {
         </div>,
         document.body
       )}
-      {toastMessage && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 16,
-            right: 16,
-            zIndex: 10001,
-            background: '#065F46',
-            color: '#ECFDF5',
-            border: '1px solid #10B981',
-            borderRadius: 10,
-            padding: '0.7rem 0.9rem',
-            fontSize: '0.85rem',
-            boxShadow: '0 12px 28px rgba(6, 95, 70, 0.35)',
-            maxWidth: 360,
-          }}
-        >
-          {toastMessage}
-        </div>
-      )}
+      {toastMessage &&
+        mounted &&
+        createPortal(
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              position: 'fixed',
+              top: 16,
+              right: 16,
+              zIndex: 100050,
+              background: toastIsError ? '#991B1B' : '#065F46',
+              color: toastIsError ? '#FEF2F2' : '#ECFDF5',
+              border: toastIsError ? '1px solid #FCA5A5' : '1px solid #10B981',
+              borderRadius: 10,
+              padding: '0.7rem 0.9rem',
+              fontSize: '0.85rem',
+              boxShadow: toastIsError
+                ? '0 12px 28px rgba(153, 27, 27, 0.35)'
+                : '0 12px 28px rgba(6, 95, 70, 0.35)',
+              maxWidth: 360,
+              pointerEvents: 'none',
+            }}
+          >
+            {toastMessage}
+          </div>,
+          document.body
+        )}
       <style>{`
         .ext-table-scroll {
           scrollbar-width: auto;

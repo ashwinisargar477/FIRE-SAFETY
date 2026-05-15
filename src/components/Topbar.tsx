@@ -12,7 +12,6 @@ const titleMap: Record<string, { title: string; desc: string }> = {
     desc: 'Register equipment & generate QR codes',
   },
   '/dashboard/plants': { title: 'Plant Master', desc: 'All Nuvoco plant locations' },
-  '/dashboard/users': { title: 'User Master', desc: 'Manage users and roles' },
 };
 
 export default function Topbar() {

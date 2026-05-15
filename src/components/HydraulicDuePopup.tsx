@@ -262,7 +262,7 @@ export default function HydraulicDuePopup() {
                       </div>
                       {utBad ? (
                         <div style={{ fontSize: '0.78rem', marginTop: 6, color: '#B45309', fontWeight: 600 }}>
-                          Next UT test due: {row.nextUtTestDate}
+                          Hydraulic test due Date: {row.nextUtTestDate}
                           {utBad ? dueDaysSuffix(row.daysUtOverdue) : ''}
                         </div>
                       ) : null}

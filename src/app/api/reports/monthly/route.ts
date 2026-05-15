@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
           p.id AS plantId,
           p.companyCode,
           p.plantCode,
-          p.plantSName AS plantName,
+          p.plantOffice AS plantName,
           COALESCE(p.region, '') AS region,
           COALESCE(p.plant_unit, '') AS plantUnit,
           COALESCE(p.cluster, '') AS cluster,
@@ -67,7 +67,7 @@ export async function GET(request: NextRequest) {
         LEFT JOIN ${EXTINGUISHER_TABLE_SCHEMA}.${EXTINGUISHER_TABLE_NAME} e
           ON (e.plantId IS NOT NULL AND e.plantId = p.id)
           OR (e.companyCode = p.companyCode AND e.plantCode = p.plantCode)
-        GROUP BY p.id, p.companyCode, p.plantCode, p.plantSName, p.region, p.plant_unit, p.cluster
+        GROUP BY p.id, p.companyCode, p.plantCode, p.plantOffice, p.region, p.plant_unit, p.cluster
         ORDER BY p.id ASC
       `,
       month

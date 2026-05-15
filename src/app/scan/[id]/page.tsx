@@ -4,6 +4,8 @@ import React, { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { buildIssueReporterPayload } from '@/lib/sessionUser';
+import { formatManufacturingYear } from '@/lib/manufacturingYear';
+import FireClassReferenceBlock from '@/components/FireClassReferenceBlock';
 import { Flame, Calendar, User, MapPin, CheckCircle, ShieldAlert, Building2, Hash, AlertTriangle } from 'lucide-react';
 
 const TYPE_USAGE_MAP: Record<string, string> = {
@@ -49,9 +51,9 @@ function ScanContent({ id }: { id: string }) {
       `Make/Type: ${String(data.make ?? 'N/A')} / ${String(data.type ?? 'N/A')}`,
       `Media/Capacity: ${String(data.media ?? 'N/A')} / ${String(data.capacity ?? 'N/A')}`,
       `Last UT test: ${String(data.lastUtTestDate ?? 'N/A')}`,
-      `Manufacturing Date: ${String(data.manufacturingDate ?? 'N/A')}`,
-      `Next UT test: ${String(data.nextUtTestDate ?? 'N/A')}`,
+      `Manufacturing year: ${formatManufacturingYear(data.manufacturingDate)}`,
       `Hydraulic test due: ${String(data.hydraulicDueDate ?? 'N/A')}`,
+      `Hydraulic test due Date: ${String(data.nextUtTestDate ?? 'N/A')}`,
       '',
       `Reported by: ${reporter.reportedBy}`,
       `Note: ${emptyNote.trim() || 'Cylinder reported empty.'}`,
@@ -162,7 +164,10 @@ function ScanContent({ id }: { id: string }) {
                 <div>
                   <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Type / Media / Capacity</span>
                   <strong style={{ fontSize: '1rem' }}>{data.type} / {data.media} / {data.capacity}</strong>
-                  <p style={{ marginTop: '0.45rem', fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                  <div style={{ marginTop: '0.65rem' }}>
+                    <FireClassReferenceBlock type={String(data.type ?? '')} />
+                  </div>
+                  <p style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
                     {usageMessage}
                   </p>
                 </div>
@@ -205,15 +210,15 @@ function ScanContent({ id }: { id: string }) {
               <li style={{ display: 'flex', gap: '1rem' }}>
                 <div style={{ color: 'var(--color-primary)' }}><Calendar size={20} /></div>
                 <div>
-                  <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Manufacturing Date</span>
-                  <strong style={{ fontSize: '1rem' }}>{new Date(data.manufacturingDate).toLocaleDateString('en-GB')}</strong>
+                  <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Manufacturing year</span>
+                  <strong style={{ fontSize: '1rem' }}>{formatManufacturingYear(data.manufacturingDate)}</strong>
                 </div>
               </li>
 
               <li style={{ display: 'flex', gap: '1rem' }}>
                 <div style={{ color: 'var(--color-primary)' }}><Calendar size={20} /></div>
                 <div>
-                  <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Next UT Test</span>
+                  <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Hydraulic test due Date</span>
                   <strong style={{ fontSize: '1rem' }}>{new Date(data.nextUtTestDate).toLocaleDateString('en-GB')}</strong>
                 </div>
               </li>

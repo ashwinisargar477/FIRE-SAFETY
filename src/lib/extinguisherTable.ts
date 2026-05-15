@@ -3,6 +3,9 @@ import { prisma } from '@/lib/prisma';
 export const EXTINGUISHER_TABLE_SCHEMA = 'transporter';
 export const EXTINGUISHER_TABLE_NAME = 'tbl_extinguishers';
 export const EXTINGUISHER_REL_TABLE_NAME = 'tbl_extinguisher_plant_rel';
+export const EXTINGUISHER_INSPECTION_TABLE_NAME = 'tbl_extinguisher_inspections';
+/** One row per key — throttles “inspection pending” digest emails to admin. */
+export const EXTINGUISHER_INSPECTION_DIGEST_META_TABLE = 'tbl_extinguisher_inspection_digest_meta';
 
 export async function ensureExtinguisherTable() {
   await prisma.$executeRawUnsafe(`
@@ -79,6 +82,28 @@ export async function ensureExtinguisherTable() {
       linkedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (relationId),
       UNIQUE KEY uq_extinguisher_plant (extinguisherId, plantId)
+    )
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS ${EXTINGUISHER_TABLE_SCHEMA}.${EXTINGUISHER_INSPECTION_TABLE_NAME} (
+      inspectionId BIGINT NOT NULL AUTO_INCREMENT,
+      extinguisherId VARCHAR(64) NOT NULL,
+      status VARCHAR(16) NOT NULL,
+      remark TEXT NULL,
+      inspectedBy VARCHAR(255) NOT NULL,
+      inspectedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (inspectionId),
+      KEY idx_extinguisher_inspection_ext (extinguisherId),
+      KEY idx_extinguisher_inspection_at (inspectedAt)
+    )
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS ${EXTINGUISHER_TABLE_SCHEMA}.${EXTINGUISHER_INSPECTION_DIGEST_META_TABLE} (
+      metaKey VARCHAR(64) NOT NULL,
+      lastSentAt DATETIME NOT NULL,
+      PRIMARY KEY (metaKey)
     )
   `);
 }

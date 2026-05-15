@@ -5,10 +5,13 @@
 export type StoredSessionUser = {
   username: string;
   displayName?: string;
+  /** Set after LDAP login — preferred for issue reporter email when present. */
+  email?: string;
 };
 
 /** Known login identities → canonical email for UI / reporting (not stored client-side). */
 const SESSION_EMAIL_BY_USERNAME: Record<string, string> = {
+  'aditya.singh01': 'aditya.singh01@nuvoco.com',
   ashwinisargar18: 'ashwinisargar18@gmail.com',
   'nuvoco\\ashwini.sargar': 'ashwinisargar18@gmail.com',
   'ashwini.sargar': 'ashwinisargar18@gmail.com',
@@ -44,11 +47,9 @@ export function parseSessionUserJson(raw: string | null): ParsedSessionUser | nu
  */
 export function resolveReporterEmail(session: ParsedSessionUser | null | undefined): string | null {
   if (!session) return null;
-  const fromMap = resolveSessionEmail(session.username);
-  if (fromMap) return fromMap;
-  const legacy = session.email?.trim();
-  if (legacy?.includes('@')) return legacy;
-  return null;
+  const fromLogin = session.email?.trim();
+  if (fromLogin?.includes('@')) return fromLogin;
+  return resolveSessionEmail(session.username);
 }
 
 export type IssueReporterPayload = {

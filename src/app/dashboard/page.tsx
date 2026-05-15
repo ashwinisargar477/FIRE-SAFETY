@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Flame,
@@ -14,31 +14,81 @@ import {
   MapPin,
   ShieldCheck,
   Sparkles,
+  ClipboardList,
+  Filter,
+  RotateCcw,
 } from 'lucide-react';
 import Link from 'next/link';
+import { locationHierarchy } from '@/data/locationHierarchy';
+
+type DashboardExtinguisherRow = {
+  id: string;
+  division: string;
+  subDivision: string;
+  zone: string;
+  plantOffice: string;
+  plant: string;
+  companyCode: string;
+  plantCode: string;
+  make: string;
+  type: string;
+  media: string;
+  capacity: string;
+  locationWithElevation: string;
+  archivedAt?: string | null;
+  lastInspectionAt?: string | null;
+  inspectionPending?: boolean;
+  installedDate?: string;
+  installedBy?: string;
+};
+
+type LocationFilterState = {
+  division: string;
+  subDivision: string;
+  zone: string;
+  plantOffice: string;
+};
+
+type DashboardStatCard = {
+  label: string;
+  /** Shown as large figure when `valueNode` is not set */
+  value?: string;
+  /** Custom main body (e.g. UT / hydraulic split counts) */
+  valueNode?: React.ReactNode;
+  delta: string;
+  icon: typeof Flame;
+  gradient: string;
+  tone: string;
+};
+
+const emptyLocFilter: LocationFilterState = {
+  division: '',
+  subDivision: '',
+  zone: '',
+  plantOffice: '',
+};
+
+function rowMatchesLocationFilter(
+  r: { division?: string; subDivision?: string; zone?: string; plantOffice?: string },
+  f: LocationFilterState
+): boolean {
+  if (f.division && (r.division ?? '') !== f.division) return false;
+  if (f.subDivision && (r.subDivision ?? '') !== f.subDivision) return false;
+  if (f.zone && (r.zone ?? '') !== f.zone) return false;
+  if (f.plantOffice && (r.plantOffice ?? '') !== f.plantOffice) return false;
+  return true;
+}
 
 export default function DashboardSummary() {
   const [mounted, setMounted] = useState(false);
   const [displayName, setDisplayName] = useState('Ashwini Sargar');
   const [expiredItems, setExpiredItems] = useState<Array<Record<string, unknown>>>([]);
-  const [dueSoonCount, setDueSoonCount] = useState(0);
-  const [extinguisherCount, setExtinguisherCount] = useState(0);
-  const [plantCount, setPlantCount] = useState(0);
   const [userCount, setUserCount] = useState(0);
-  const [inspectedCount, setInspectedCount] = useState(0);
-  const [typeBreakdown, setTypeBreakdown] = useState<Array<{ type: string; count: number; color: string }>>([]);
-  const [inspections, setInspections] = useState<Array<{ label: string; v: number }>>([
-    { label: 'Mon', v: 0 },
-    { label: 'Tue', v: 0 },
-    { label: 'Wed', v: 0 },
-    { label: 'Thu', v: 0 },
-    { label: 'Fri', v: 0 },
-    { label: 'Sat', v: 0 },
-    { label: 'Sun', v: 0 },
-  ]);
-  const [recentActivity, setRecentActivity] = useState<
-    Array<{ id: string; type: string; plant: string; where: string; who: string; when: string; status: 'installed' | 'inspected' }>
-  >([]);
+  const [plantsList, setPlantsList] = useState<Array<Record<string, unknown>>>([]);
+  const [dueSoonList, setDueSoonList] = useState<Array<Record<string, unknown>>>([]);
+  const [extinguisherRegistry, setExtinguisherRegistry] = useState<DashboardExtinguisherRow[]>([]);
+  const [locFilterDraft, setLocFilterDraft] = useState<LocationFilterState>(emptyLocFilter);
+  const [locFilterApplied, setLocFilterApplied] = useState<LocationFilterState>(emptyLocFilter);
 
   useEffect(() => {
     setMounted(true);
@@ -69,12 +119,12 @@ export default function DashboardSummary() {
           const expiry = (await expiryRes.json()) as { expired?: Array<Record<string, unknown>>; dueSoon?: unknown[] };
           const expired = expiry.expired ?? [];
           setExpiredItems(expired);
-          setDueSoonCount(Array.isArray(expiry.dueSoon) ? expiry.dueSoon.length : 0);
+          setDueSoonList(Array.isArray(expiry.dueSoon) ? (expiry.dueSoon as Array<Record<string, unknown>>) : []);
         }
 
         if (plantRes.ok) {
           const plants = (await plantRes.json()) as Array<Record<string, unknown>>;
-          setPlantCount(plants.length);
+          setPlantsList(plants);
         }
 
         if (usersRes.ok) {
@@ -84,65 +134,28 @@ export default function DashboardSummary() {
 
         if (extRes.ok) {
           const extRows = (await extRes.json()) as Array<Record<string, unknown>>;
-          setExtinguisherCount(extRows.length);
-
-          const installed = extRows.filter((r) => !String(r.archivedAt ?? '').trim());
-          setInspectedCount(installed.length);
-
-          const byType = new Map<string, number>();
-          for (const row of extRows) {
-            const t = String(row.type ?? '').trim().toUpperCase() || 'UNKNOWN';
-            byType.set(t, (byType.get(t) ?? 0) + 1);
-          }
-          const palette = ['#007A53', '#FF6B35', '#3B82F6', '#8BBE35', '#A855F7', '#F59E0B'];
-          const mix = Array.from(byType.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 6)
-            .map(([type, count], idx) => ({ type, count, color: palette[idx % palette.length] }));
-          setTypeBreakdown(mix);
-
-          const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-          const weekCounts = [0, 0, 0, 0, 0, 0, 0];
-          for (const row of extRows) {
-            const d = new Date(String(row.installedDate ?? ''));
-            if (Number.isNaN(d.getTime())) continue;
-            weekCounts[d.getDay()] += 1;
-          }
-          setInspections([
-            { label: 'Mon', v: weekCounts[1] },
-            { label: 'Tue', v: weekCounts[2] },
-            { label: 'Wed', v: weekCounts[3] },
-            { label: 'Thu', v: weekCounts[4] },
-            { label: 'Fri', v: weekCounts[5] },
-            { label: 'Sat', v: weekCounts[6] },
-            { label: 'Sun', v: weekCounts[0] },
-          ]);
-
-          const relTime = (iso: string) => {
-            const d = new Date(iso);
-            if (Number.isNaN(d.getTime())) return 'recently';
-            const mins = Math.floor((Date.now() - d.getTime()) / 60000);
-            if (mins < 1) return 'just now';
-            if (mins < 60) return `${mins} min ago`;
-            const hrs = Math.floor(mins / 60);
-            if (hrs < 24) return `${hrs} hr ago`;
-            const days = Math.floor(hrs / 24);
-            return days === 1 ? 'Yesterday' : `${days} days ago`;
-          };
-
-          const recent = [...extRows]
-            .sort((a, b) => new Date(String(b.installedDate ?? '')).getTime() - new Date(String(a.installedDate ?? '')).getTime())
-            .slice(0, 6)
-            .map((r) => ({
-              id: String(r.id ?? 'N/A'),
-              type: `${String(r.type ?? 'N/A')} ${String(r.capacity ?? '').trim()}`.trim(),
-              plant: String(r.plant ?? 'N/A'),
-              where: String(r.locationWithElevation ?? 'N/A'),
-              who: String(r.installedBy ?? 'system'),
-              when: relTime(String(r.installedDate ?? '')),
-              status: 'installed' as const,
-            }));
-          setRecentActivity(recent);
+          setExtinguisherRegistry(
+            extRows.map((r) => ({
+              id: String(r.id ?? ''),
+              division: String(r.division ?? ''),
+              subDivision: String(r.subDivision ?? ''),
+              zone: String(r.zone ?? ''),
+              plantOffice: String(r.plantOffice ?? ''),
+              plant: String(r.plant ?? ''),
+              companyCode: String(r.companyCode ?? ''),
+              plantCode: String(r.plantCode ?? ''),
+              make: String(r.make ?? ''),
+              type: String(r.type ?? ''),
+              media: String(r.media ?? ''),
+              capacity: String(r.capacity ?? ''),
+              locationWithElevation: String(r.locationWithElevation ?? ''),
+              archivedAt: r.archivedAt != null ? String(r.archivedAt) : null,
+              lastInspectionAt: r.lastInspectionAt != null ? String(r.lastInspectionAt) : null,
+              inspectionPending: Boolean(r.inspectionPending),
+              installedDate: r.installedDate != null ? String(r.installedDate) : '',
+              installedBy: r.installedBy != null ? String(r.installedBy) : '',
+            }))
+          );
         }
       } catch (error) {
         console.error('Failed to load dashboard live data', error);
@@ -151,19 +164,212 @@ export default function DashboardSummary() {
     loadLiveDashboardData();
   }, [mounted]);
 
-  const stats = [
+  /** Same hierarchy lists as Plant Master → Add Plant (`locationHierarchy`). */
+  const hierarchyDivisionOptions = useMemo(
+    () => Array.from(new Set(locationHierarchy.map((item) => item.division))),
+    []
+  );
+  const hierarchySubDivisionOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          locationHierarchy
+            .filter((item) => item.division === locFilterDraft.division)
+            .map((item) => item.subDivision)
+        )
+      ),
+    [locFilterDraft.division]
+  );
+  const hierarchyZoneOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          locationHierarchy
+            .filter(
+              (item) =>
+                item.division === locFilterDraft.division &&
+                item.subDivision === locFilterDraft.subDivision
+            )
+            .map((item) => item.zone)
+        )
+      ),
+    [locFilterDraft.division, locFilterDraft.subDivision]
+  );
+  const hierarchyPlantOfficeOptions = useMemo(
+    () =>
+      locationHierarchy
+        .filter(
+          (item) =>
+            item.division === locFilterDraft.division &&
+            item.subDivision === locFilterDraft.subDivision &&
+            item.zone === locFilterDraft.zone
+        )
+        .map((item) => item.plantOffice),
+    [locFilterDraft.division, locFilterDraft.subDivision, locFilterDraft.zone]
+  );
+
+  const hasLocationFilterApplied = Boolean(
+    locFilterApplied.division ||
+      locFilterApplied.subDivision ||
+      locFilterApplied.zone ||
+      locFilterApplied.plantOffice
+  );
+
+  const extinguishersInLocationScope = useMemo(
+    () => extinguisherRegistry.filter((r) => rowMatchesLocationFilter(r, locFilterApplied)),
+    [extinguisherRegistry, locFilterApplied]
+  );
+
+  const plantsInLocationScope = useMemo(
+    () =>
+      plantsList.filter((p) =>
+        rowMatchesLocationFilter(
+          {
+            division: String(p.division ?? ''),
+            subDivision: String(p.subDivision ?? ''),
+            zone: String(p.zone ?? ''),
+            plantOffice: String(p.plantOffice ?? ''),
+          },
+          locFilterApplied
+        )
+      ),
+    [plantsList, locFilterApplied]
+  );
+
+  const scopeExtinguisherIds = useMemo(
+    () => new Set(extinguishersInLocationScope.map((e) => e.id)),
+    [extinguishersInLocationScope]
+  );
+
+  const expiredInScope = useMemo(() => {
+    if (!hasLocationFilterApplied) return expiredItems;
+    return expiredItems.filter((row) => scopeExtinguisherIds.has(String(row.id ?? '')));
+  }, [expiredItems, scopeExtinguisherIds, hasLocationFilterApplied]);
+
+  const dueSoonInScope = useMemo(() => {
+    if (!hasLocationFilterApplied) return dueSoonList;
+    return dueSoonList.filter((row) => scopeExtinguisherIds.has(String(row.id ?? '')));
+  }, [dueSoonList, scopeExtinguisherIds, hasLocationFilterApplied]);
+
+  const extinguisherCountScoped = extinguishersInLocationScope.length;
+  const plantCountScoped = plantsInLocationScope.length;
+
+  const installedInScope = useMemo(
+    () => extinguishersInLocationScope.filter((r) => !String(r.archivedAt ?? '').trim()),
+    [extinguishersInLocationScope]
+  );
+  const inspectedCountScoped = installedInScope.length;
+
+  const typeBreakdownScoped = useMemo(() => {
+    const byType = new Map<string, number>();
+    for (const row of extinguishersInLocationScope) {
+      const t = row.type?.trim().toUpperCase() || 'UNKNOWN';
+      byType.set(t, (byType.get(t) ?? 0) + 1);
+    }
+    const palette = ['#007A53', '#FF6B35', '#3B82F6', '#8BBE35', '#A855F7', '#F59E0B'];
+    return Array.from(byType.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([type, count], idx) => ({ type, count, color: palette[idx % palette.length] }));
+  }, [extinguishersInLocationScope]);
+
+  const inspectionsScoped = useMemo(() => {
+    const weekCounts = [0, 0, 0, 0, 0, 0, 0];
+    for (const row of extinguishersInLocationScope) {
+      const d = new Date(String(row.installedDate ?? ''));
+      if (Number.isNaN(d.getTime())) continue;
+      weekCounts[d.getDay()] += 1;
+    }
+    return [
+      { label: 'Mon', v: weekCounts[1] },
+      { label: 'Tue', v: weekCounts[2] },
+      { label: 'Wed', v: weekCounts[3] },
+      { label: 'Thu', v: weekCounts[4] },
+      { label: 'Fri', v: weekCounts[5] },
+      { label: 'Sat', v: weekCounts[6] },
+      { label: 'Sun', v: weekCounts[0] },
+    ];
+  }, [extinguishersInLocationScope]);
+
+  const recentActivityScoped = useMemo(() => {
+    const relTime = (iso: string) => {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return 'recently';
+      const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins} min ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs} hr ago`;
+      const days = Math.floor(hrs / 24);
+      return days === 1 ? 'Yesterday' : `${days} days ago`;
+    };
+    return [...extinguishersInLocationScope]
+      .sort(
+        (a, b) =>
+          new Date(String(b.installedDate ?? '')).getTime() - new Date(String(a.installedDate ?? '')).getTime()
+      )
+      .slice(0, 6)
+      .map((r) => ({
+        id: String(r.id ?? 'N/A'),
+        type: `${String(r.type ?? 'N/A')} ${String(r.capacity ?? '').trim()}`.trim(),
+        plant: String(r.plant ?? 'N/A'),
+        where: String(r.locationWithElevation ?? 'N/A'),
+        who: String(r.installedBy ?? 'system'),
+        when: relTime(String(r.installedDate ?? '')),
+        status: 'installed' as const,
+      }));
+  }, [extinguishersInLocationScope]);
+
+  const inspectionOverdueTotalOrg = useMemo(
+    () =>
+      extinguisherRegistry.filter((r) => {
+        const archived = String(r.archivedAt ?? '').trim();
+        return !archived && r.inspectionPending === true;
+      }),
+    [extinguisherRegistry]
+  );
+
+  const inspectionOverdueScoped = useMemo(
+    () =>
+      extinguishersInLocationScope.filter((r) => {
+        const archived = String(r.archivedAt ?? '').trim();
+        return !archived && r.inspectionPending === true;
+      }),
+    [extinguishersInLocationScope]
+  );
+
+  const applyLocationFilter = () => {
+    setLocFilterApplied({ ...locFilterDraft });
+  };
+
+  const clearLocationFilter = () => {
+    setLocFilterDraft({ ...emptyLocFilter });
+    setLocFilterApplied({ ...emptyLocFilter });
+  };
+
+  const scopeFootnote = hasLocationFilterApplied ? 'Selected location' : 'Live from register';
+  const scopeFootnotePlants = hasLocationFilterApplied ? 'Selected location' : 'Live from plant master';
+  const scopeFootnoteExpiry = hasLocationFilterApplied ? 'Selected location' : 'From live register';
+
+  const inspectionOverdueStatDelta = hasLocationFilterApplied
+    ? inspectionOverdueScoped.length !== inspectionOverdueTotalOrg.length
+      ? `of ${inspectionOverdueTotalOrg.length.toLocaleString('en-IN')} org-wide`
+      : 'Filtered · live register'
+    : 'Live from register';
+
+  const stats: DashboardStatCard[] = [
     {
       label: 'Total Extinguishers',
-      value: extinguisherCount.toLocaleString('en-IN'),
-      delta: 'Live from register',
+      value: extinguisherCountScoped.toLocaleString('en-IN'),
+      delta: scopeFootnote,
       icon: Flame,
       gradient: 'linear-gradient(135deg,#FF6B35,#E63946)',
       tone: '#FF6B35',
     },
     {
       label: 'Active Plants',
-      value: plantCount.toLocaleString('en-IN'),
-      delta: 'Live from plant master',
+      value: plantCountScoped.toLocaleString('en-IN'),
+      delta: scopeFootnotePlants,
       icon: Factory,
       gradient: 'linear-gradient(135deg,#007A53,#8BBE35)',
       tone: '#007A53',
@@ -171,40 +377,117 @@ export default function DashboardSummary() {
     {
       label: 'Users',
       value: userCount.toLocaleString('en-IN'),
-      delta: 'Live from user master',
+      delta: hasLocationFilterApplied ? 'Organization total' : 'Live from user master',
       icon: Users,
       gradient: 'linear-gradient(135deg,#3B82F6,#004B87)',
       tone: '#3B82F6',
     },
     {
       label: 'UT / hydraulic due',
-      value: `${expiredItems.length} overdue · ${dueSoonCount} ≤30d`,
-      delta: 'From live register',
+      valueNode: (
+        <div
+          style={{
+            marginTop: 4,
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: 6,
+            lineHeight: 1.2,
+          }}
+        >
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '0.22rem 0.5rem',
+              borderRadius: 999,
+              background: 'rgba(180, 83, 9, 0.1)',
+              border: '1px solid rgba(180, 83, 9, 0.22)',
+            }}
+          >
+            <span style={{ fontSize: '0.95rem', fontWeight: 800, color: '#9A3412', letterSpacing: '-0.02em' }}>
+              {expiredInScope.length}
+            </span>
+            <span
+              style={{
+                fontSize: '0.58rem',
+                fontWeight: 700,
+                color: '#B45309',
+                textTransform: 'uppercase',
+                letterSpacing: '0.07em',
+              }}
+            >
+              overdue
+            </span>
+          </span>
+          <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', fontWeight: 700 }} aria-hidden>
+            ·
+          </span>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '0.22rem 0.5rem',
+              borderRadius: 999,
+              background: 'rgba(14, 116, 144, 0.08)',
+              border: '1px solid rgba(14, 116, 144, 0.2)',
+            }}
+          >
+            <span style={{ fontSize: '0.95rem', fontWeight: 800, color: '#0E7490', letterSpacing: '-0.02em' }}>
+              {dueSoonInScope.length}
+            </span>
+            <span
+              style={{
+                fontSize: '0.58rem',
+                fontWeight: 700,
+                color: '#0F766E',
+                letterSpacing: '0.04em',
+              }}
+            >
+              ≤30d
+            </span>
+          </span>
+        </div>
+      ),
+      delta: scopeFootnoteExpiry,
       icon: AlertTriangle,
       gradient: 'linear-gradient(135deg,#F59E0B,#FFB627)',
       tone: '#F59E0B',
     },
+    {
+      label: 'Inspection overdue',
+      value: inspectionOverdueScoped.length.toLocaleString('en-IN'),
+      delta: inspectionOverdueStatDelta,
+      icon: ClipboardList,
+      gradient: 'linear-gradient(135deg,#C2410C,#EA580C)',
+      tone: '#EA580C',
+    },
   ];
 
-  const maxV = Math.max(1, ...inspections.map((i) => i.v));
-  const totalType = Math.max(1, typeBreakdown.reduce((a, b) => a + b.count, 0));
-  const compliance = extinguisherCount === 0 ? 100 : Math.max(0, Math.min(100, Math.round((inspectedCount / extinguisherCount) * 100)));
+  const maxV = Math.max(1, ...inspectionsScoped.map((i) => i.v));
+  const totalType = Math.max(1, typeBreakdownScoped.reduce((a, b) => a + b.count, 0));
+  const compliance =
+    extinguisherCountScoped === 0
+      ? 100
+      : Math.max(0, Math.min(100, Math.round((inspectedCountScoped / extinguisherCountScoped) * 100)));
 
   if (!mounted) return null;
 
   return (
-    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
       {/* Hero Banner */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         style={{
           position: 'relative',
-          borderRadius: 20,
+          borderRadius: 16,
           overflow: 'hidden',
           background: 'var(--gradient-dark)',
           color: 'white',
-          padding: '1.75rem 1.75rem',
+          padding: '1rem 1.25rem',
         }}
       >
         <div
@@ -236,46 +519,203 @@ export default function DashboardSummary() {
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: 6,
-                padding: '0.3rem 0.7rem',
+                gap: 5,
+                padding: '0.2rem 0.55rem',
                 borderRadius: 999,
                 background: 'rgba(255,107,53,0.15)',
                 border: '1px solid rgba(255,107,53,0.35)',
-                fontSize: '0.7rem',
+                fontSize: '0.65rem',
                 fontWeight: 600,
                 color: '#FFB627',
-                marginBottom: 8,
+                marginBottom: 4,
               }}
             >
-              <Sparkles size={12} /> Safety Snapshot
+              <Sparkles size={11} /> Safety Snapshot
             </div>
-            <h2 style={{ fontSize: '1.75rem', fontWeight: 800, margin: 0 }}>
+            <h2 style={{ fontSize: '1.35rem', fontWeight: 800, margin: 0, lineHeight: 1.2 }}>
               Safety Overview
             </h2>
-            <p style={{ marginTop: 6, marginBottom: 0, opacity: 0.85, fontSize: '0.85rem' }}>
+            <p style={{ marginTop: 4, marginBottom: 0, opacity: 0.85, fontSize: '0.78rem' }}>
               Welcome, {displayName}
             </p>
           </div>
 
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <Link href="/dashboard/extinguishers" className="btn btn-fire">
-              <Flame size={16} /> Register New
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Link
+              href="/dashboard/extinguishers"
+              className="btn btn-fire"
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+            >
+              <Flame size={15} /> Register New
             </Link>
-            <Link href="/dashboard/extinguishers" className="btn btn-ghost">
-              <QrCode size={16} /> Generate QR
+            <Link
+              href="/dashboard/extinguishers"
+              className="btn btn-ghost"
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+            >
+              <QrCode size={15} /> Generate QR
             </Link>
           </div>
         </div>
       </motion.div>
 
-      {/* Stats */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: '1rem',
-        }}
+      {/* Location filter — above KPI cards; Filter applies to all KPIs and charts below */}
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.06 }}
+        className="card"
+        style={{ padding: '0.65rem 1rem' }}
       >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '0.45rem',
+            marginBottom: '0.5rem',
+          }}
+        >
+          <h3
+            style={{
+              fontSize: '0.85rem',
+              fontWeight: 700,
+              color: 'var(--color-secondary)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              margin: 0,
+            }}
+          >
+            <Filter size={15} aria-hidden />
+            Location filter
+          </h3>
+          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+            Same location tree as Plant Master (Add Plant). Click Filter to refresh all cards and charts for the selection.
+          </span>
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+            gap: '0.5rem',
+            marginBottom: '0.5rem',
+            alignItems: 'end',
+          }}
+        >
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.68rem', fontWeight: 600 }}>
+            Division
+            <select
+              className="input-field"
+              style={{ fontSize: '0.78rem', padding: '0.35rem 0.5rem', minHeight: 36 }}
+              value={locFilterDraft.division}
+              onChange={(e) =>
+                setLocFilterDraft({
+                  division: e.target.value,
+                  subDivision: '',
+                  zone: '',
+                  plantOffice: '',
+                })
+              }
+            >
+              <option value="">All divisions</option>
+              {hierarchyDivisionOptions.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.68rem', fontWeight: 600 }}>
+            Subdivision
+            <select
+              className="input-field"
+              style={{ fontSize: '0.78rem', padding: '0.35rem 0.5rem', minHeight: 36 }}
+              disabled={!locFilterDraft.division}
+              value={locFilterDraft.subDivision}
+              onChange={(e) =>
+                setLocFilterDraft((prev) => ({
+                  ...prev,
+                  subDivision: e.target.value,
+                  zone: '',
+                  plantOffice: '',
+                }))
+              }
+            >
+              <option value="">All subdivisions</option>
+              {hierarchySubDivisionOptions.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.68rem', fontWeight: 600 }}>
+            Zone
+            <select
+              className="input-field"
+              style={{ fontSize: '0.78rem', padding: '0.35rem 0.5rem', minHeight: 36 }}
+              disabled={!locFilterDraft.subDivision}
+              value={locFilterDraft.zone}
+              onChange={(e) =>
+                setLocFilterDraft((prev) => ({
+                  ...prev,
+                  zone: e.target.value,
+                  plantOffice: '',
+                }))
+              }
+            >
+              <option value="">All zones</option>
+              {hierarchyZoneOptions.map((z) => (
+                <option key={z} value={z}>
+                  {z}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.68rem', fontWeight: 600 }}>
+            Plant / Office
+            <select
+              className="input-field"
+              style={{ fontSize: '0.78rem', padding: '0.35rem 0.5rem', minHeight: 36 }}
+              disabled={!locFilterDraft.zone}
+              value={locFilterDraft.plantOffice}
+              onChange={(e) => setLocFilterDraft((prev) => ({ ...prev, plantOffice: e.target.value }))}
+            >
+              <option value="">All plants / offices</option>
+              {hierarchyPlantOfficeOptions.map((p) => (
+                <option key={`${locFilterDraft.zone}-${p}`} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem' }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '0.32rem 0.65rem', fontSize: '0.78rem' }}
+            onClick={applyLocationFilter}
+          >
+            <Filter size={13} aria-hidden />
+            Filter
+          </button>
+          <button
+            type="button"
+            className="btn btn-outline"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '0.32rem 0.65rem', fontSize: '0.78rem' }}
+            onClick={clearLocationFilter}
+          >
+            <RotateCcw size={13} aria-hidden />
+            Clear
+          </button>
+        </div>
+      </motion.div>
+
+      {/* Stats — five KPI cards in one row on wide screens */}
+      <div className="dashboard-kpi-row">
         {stats.map((s, i) => (
           <motion.div
             key={s.label}
@@ -325,17 +765,21 @@ export default function DashboardSummary() {
                 >
                   {s.label}
                 </div>
-                <div
-                  style={{
-                    fontSize: '1.65rem',
-                    fontWeight: 800,
-                    color: 'var(--text-primary)',
-                    lineHeight: 1.1,
-                    marginTop: 2,
-                  }}
-                >
-                  {s.value}
-                </div>
+                {s.valueNode != null ? (
+                  <div style={{ minHeight: '2.25rem' }}>{s.valueNode}</div>
+                ) : (
+                  <div
+                    style={{
+                      fontSize: '1.65rem',
+                      fontWeight: 800,
+                      color: 'var(--text-primary)',
+                      lineHeight: 1.1,
+                      marginTop: 2,
+                    }}
+                  >
+                    {s.value}
+                  </div>
+                )}
                 <div
                   style={{
                     fontSize: '0.72rem',
@@ -394,7 +838,7 @@ export default function DashboardSummary() {
               padding: '0.5rem 0',
             }}
           >
-            {inspections.map((d, i) => (
+            {inspectionsScoped.map((d, i) => (
               <div
                 key={d.label}
                 style={{
@@ -474,8 +918,12 @@ export default function DashboardSummary() {
               marginTop: '1rem',
             }}
           >
-            <MiniTile label="Inspected" value={inspectedCount.toLocaleString('en-IN')} tone="#10B981" />
-            <MiniTile label="Pending" value={Math.max(extinguisherCount - inspectedCount, 0).toLocaleString('en-IN')} tone="#F59E0B" />
+            <MiniTile label="Inspected" value={inspectedCountScoped.toLocaleString('en-IN')} tone="#10B981" />
+            <MiniTile
+              label="Pending"
+              value={Math.max(extinguisherCountScoped - inspectedCountScoped, 0).toLocaleString('en-IN')}
+              tone="#F59E0B"
+            />
           </div>
         </motion.div>
       </div>
@@ -503,7 +951,7 @@ export default function DashboardSummary() {
             Distribution by type
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {typeBreakdown.map((t, i) => {
+            {typeBreakdownScoped.map((t, i) => {
               const pct = Math.round((t.count / totalType) * 100);
               return (
                 <div key={t.type}>
@@ -589,7 +1037,7 @@ export default function DashboardSummary() {
               gap: 0,
             }}
           >
-            {recentActivity.map((it, idx, arr) => (
+            {recentActivityScoped.map((it, idx, arr) => (
               <li
                 key={it.id}
                 style={{
@@ -648,7 +1096,7 @@ export default function DashboardSummary() {
                 </span>
               </li>
             ))}
-            {recentActivity.length === 0 && (
+            {recentActivityScoped.length === 0 && (
               <li style={{ padding: '0.6rem 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                 No live activity yet.
               </li>
@@ -658,6 +1106,21 @@ export default function DashboardSummary() {
       </div>
 
       <style>{`
+        .dashboard-kpi-row {
+          display: grid;
+          grid-template-columns: repeat(5, minmax(0, 1fr));
+          gap: 1rem;
+        }
+        @media (max-width: 1200px) {
+          .dashboard-kpi-row {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
+        }
+        @media (max-width: 720px) {
+          .dashboard-kpi-row {
+            grid-template-columns: 1fr;
+          }
+        }
         @media (max-width: 900px) {
           .charts-row { grid-template-columns: 1fr !important; }
         }

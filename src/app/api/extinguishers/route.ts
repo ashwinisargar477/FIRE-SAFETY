@@ -2,14 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import {
   ensureExtinguisherTable,
+  EXTINGUISHER_INSPECTION_TABLE_NAME,
   EXTINGUISHER_REL_TABLE_NAME,
   EXTINGUISHER_TABLE_NAME,
   EXTINGUISHER_TABLE_SCHEMA,
 } from '@/lib/extinguisherTable';
+import { addYearsToIsoDate } from '@/lib/addYearsToIsoDate';
 
 const TABLE_SCHEMA = EXTINGUISHER_TABLE_SCHEMA;
 const TABLE_NAME = EXTINGUISHER_TABLE_NAME;
 const REL_TABLE_NAME = EXTINGUISHER_REL_TABLE_NAME;
+const INSP_TABLE = EXTINGUISHER_INSPECTION_TABLE_NAME;
 
 type CreateExtinguisherBody = {
   id?: string;
@@ -112,6 +115,37 @@ function extinguisherPlantJoin(hasPlants: boolean): string {
           OR (p.companyCode = e.companyCode AND p.plantCode = e.plantCode)`;
 }
 
+function extinguisherInspectionJoin(): string {
+  return `
+        LEFT JOIN (
+          SELECT extinguisherId, MAX(inspectedAt) AS lastInspectionAt
+          FROM ${TABLE_SCHEMA}.${INSP_TABLE}
+          GROUP BY extinguisherId
+        ) inv ON inv.extinguisherId = e.id`;
+}
+
+/** Last inspection time + whether active row needs inspection (none in last 3 months; grace for new installs). */
+function extinguisherInspectionSelect(): string {
+  return `
+          , DATE_FORMAT(inv.lastInspectionAt, '%Y-%m-%dT%H:%i:%sZ') AS lastInspectionAt
+          , CASE
+              WHEN e.archived_at IS NOT NULL THEN 0
+              WHEN inv.lastInspectionAt IS NULL AND e.installedDate >= DATE_SUB(NOW(), INTERVAL 3 MONTH) THEN 0
+              WHEN inv.lastInspectionAt IS NULL THEN 1
+              WHEN inv.lastInspectionAt < DATE_SUB(NOW(), INTERVAL 3 MONTH) THEN 1
+              ELSE 0
+            END AS inspectionPending`;
+}
+
+function mapExtinguisherApiRow(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!row) return null;
+  return {
+    ...row,
+    lastInspectionAt: row.lastInspectionAt ?? null,
+    inspectionPending: Number(row.inspectionPending) === 1,
+  };
+}
+
 async function upsertRelation(
   extinguisherId: string,
   plantId: number | null,
@@ -144,16 +178,19 @@ export async function GET(request: NextRequest) {
     const hasPlants = await schemaHasPlantsTable();
     const join = extinguisherPlantJoin(hasPlants);
     const fields = extinguisherSelectFields(hasPlants);
+    const inJoin = extinguisherInspectionJoin();
+    const inSel = extinguisherInspectionSelect();
     const rows = (await prisma.$queryRawUnsafe(
       `
-        SELECT ${fields}
+        SELECT ${fields}${inSel}
         FROM ${TABLE_SCHEMA}.${TABLE_NAME} e
         ${join}
+        ${inJoin}
         WHERE ${archivedClause}
         ORDER BY e.installedDate DESC
       `
     )) as Record<string, unknown>[];
-    return NextResponse.json(rows, { status: 200 });
+    return NextResponse.json(rows.map((r) => mapExtinguisherApiRow(r)), { status: 200 });
   } catch (error) {
     console.error('Failed to fetch extinguishers', error);
     return NextResponse.json(
@@ -177,38 +214,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ message: 'Required fields are missing.' }, { status: 400 });
     }
 
+    const hydraulicNorm =
+      body.hydraulicDueDate != null && String(body.hydraulicDueDate).trim() !== ''
+        ? String(body.hydraulicDueDate).trim().slice(0, 10)
+        : null;
+
+    const nextUtTestDateStored = hydraulicNorm
+      ? addYearsToIsoDate(hydraulicNorm, 3)
+      : String(body.nextUtTestDate ?? '').trim().slice(0, 10);
+
     await prisma.$executeRawUnsafe(
       `
         INSERT INTO ${TABLE_SCHEMA}.${TABLE_NAME}
         (id, division, subDivision, zone, plantOffice, plantId, companyCode, plantCode, plant, showStatus, region, plant_unit, cluster, company_name, make, type, media, capacity, locationWithElevation, lastUtTestDate, manufacturingDate, nextUtTestDate, hydraulicDueDate, installedBy, installedDate)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-        division = VALUES(division),
-        subDivision = VALUES(subDivision),
-        zone = VALUES(zone),
-        plantOffice = VALUES(plantOffice),
-        plantId = VALUES(plantId),
-        companyCode = VALUES(companyCode),
-        plantCode = VALUES(plantCode),
-        plant = VALUES(plant),
-        showStatus = VALUES(showStatus),
-        region = VALUES(region),
-        plant_unit = VALUES(plant_unit),
-        cluster = VALUES(cluster),
-        company_name = VALUES(company_name),
-        make = VALUES(make),
-        type = VALUES(type),
-        media = VALUES(media),
-        capacity = VALUES(capacity),
-        locationWithElevation = VALUES(locationWithElevation),
-        lastUtTestDate = VALUES(lastUtTestDate),
-        manufacturingDate = VALUES(manufacturingDate),
-        nextUtTestDate = VALUES(nextUtTestDate),
-        hydraulicDueDate = VALUES(hydraulicDueDate),
-        installedBy = VALUES(installedBy),
-        installedDate = VALUES(installedDate),
-        archived_at = NULL,
-        archived_reason = NULL
       `,
       serial,
       body.division ?? '',
@@ -231,8 +250,8 @@ export async function POST(request: Request) {
       body.locationWithElevation ?? '',
       body.lastUtTestDate ?? '',
       body.manufacturingDate ?? '',
-      body.nextUtTestDate ?? '',
-      body.hydraulicDueDate ?? null,
+      nextUtTestDateStored,
+      hydraulicNorm,
       body.installedBy ?? 'nuvoco\\admin',
       body.installedDate ?? new Date().toISOString().slice(0, 19).replace('T', ' ')
     );
@@ -246,21 +265,54 @@ export async function POST(request: Request) {
     const hasPlants = await schemaHasPlantsTable();
     const join = extinguisherPlantJoin(hasPlants);
     const fields = extinguisherSelectFields(hasPlants);
+    const inJoin = extinguisherInspectionJoin();
+    const inSel = extinguisherInspectionSelect();
     const rows = (await prisma.$queryRawUnsafe(
       `
-        SELECT ${fields}
+        SELECT ${fields}${inSel}
         FROM ${TABLE_SCHEMA}.${TABLE_NAME} e
         ${join}
+        ${inJoin}
         WHERE e.id = ?
         LIMIT 1
       `,
       serial
     )) as Record<string, unknown>[];
 
-    return NextResponse.json(rows[0] ?? null, { status: 201 });
+    return NextResponse.json(mapExtinguisherApiRow(rows[0]), { status: 201 });
   } catch (error) {
     console.error('Failed to save extinguisher', error);
-    return NextResponse.json({ message: 'Failed to save extinguisher record' }, { status: 500 });
+    const errStr = error instanceof Error ? error.message : String(error);
+    const maybeErrno =
+      typeof error === 'object' && error !== null && 'errno' in error
+        ? Number((error as { errno?: unknown }).errno)
+        : NaN;
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: string }).code)
+        : '';
+    const isDuplicate =
+      maybeErrno === 1062 ||
+      code === 'ER_DUP_ENTRY' ||
+      errStr.includes('Duplicate entry') ||
+      errStr.includes('Duplicate key') ||
+      errStr.includes('1062');
+    if (isDuplicate) {
+      return NextResponse.json(
+        {
+          message:
+            'This Unique Serial Number is already registered. Choose a different serial.',
+        },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json(
+      {
+        message: 'Failed to save extinguisher record',
+        detail: process.env.NODE_ENV === 'development' ? errStr : undefined,
+      },
+      { status: 500 }
+    );
   }
 }
 
@@ -268,7 +320,7 @@ export async function PUT() {
   try {
     await ensureExtinguisherTable();
     const plants = (await prisma.$queryRawUnsafe(
-      `SELECT id, companyCode, plantCode, plantSName, showStatus, region, plant_unit, cluster, company_name FROM ${TABLE_SCHEMA}.tbl_plants ORDER BY id ASC LIMIT 5`
+      `SELECT id, companyCode, plantCode, plantOffice, showStatus, region, plant_unit, cluster, company_name FROM ${TABLE_SCHEMA}.tbl_plants ORDER BY id ASC LIMIT 5`
     )) as Array<Record<string, unknown>>;
 
     if (plants.length === 0) {
@@ -280,7 +332,7 @@ export async function PUT() {
       const plantId = Number(plants[i].id);
       const companyCode = String(plants[i].companyCode ?? '');
       const plantCode = String(plants[i].plantCode ?? '');
-      const plantName = String(plants[i].plantSName ?? '');
+      const plantName = String(plants[i].plantOffice ?? '');
       const showStatus = String(plants[i].showStatus ?? 't');
       const region = String(plants[i].region ?? '');
       const plantUnit = String(plants[i].plant_unit ?? '');

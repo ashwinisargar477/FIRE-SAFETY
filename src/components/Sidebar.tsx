@@ -1,10 +1,9 @@
 'use client';
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
-  Users,
   Factory,
   Flame,
   LogOut,
@@ -19,13 +18,26 @@ const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
   { icon: Factory, label: 'Plants', href: '/dashboard/plants' },
   { icon: Flame, label: 'Extinguishers', href: '/dashboard/extinguishers' },
-  { icon: Users, label: 'Users', href: '/dashboard/users' },
 ];
 
 export default function Sidebar() {
   const [isOpen, setIsOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(true);
   const pathname = usePathname();
+  const router = useRouter();
+
+  async function handleSignOut() {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      try {
+        window.localStorage.removeItem('nuvoco-current-user');
+      } catch {
+        /* ignore */
+      }
+      router.push('/');
+    }
+  }
 
   useEffect(() => {
     const checkWidth = () => setIsDesktop(window.innerWidth >= 768);
@@ -291,10 +303,10 @@ export default function Sidebar() {
                 })}
               </ul>
 
-              {/* Shortcut action */}
+              {/* QR labels — slim table only (no register / edit columns) */}
               <div style={{ marginTop: '1.2rem', padding: '0 0.2rem' }}>
                 <Link
-                  href="/dashboard/extinguishers"
+                  href="/dashboard/GenerateQR"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -302,14 +314,19 @@ export default function Sidebar() {
                     padding: '0.7rem 0.8rem',
                     borderRadius: 12,
                     background:
-                      'linear-gradient(135deg, rgba(255,107,53,0.18), rgba(230,57,70,0.12))',
-                    border: '1px solid rgba(255,107,53,0.35)',
+                      pathname === '/dashboard/GenerateQR'
+                        ? 'linear-gradient(90deg, rgba(255,107,53,0.28), rgba(0,122,83,0.18))'
+                        : 'linear-gradient(135deg, rgba(255,107,53,0.18), rgba(230,57,70,0.12))',
+                    border:
+                      pathname === '/dashboard/GenerateQR'
+                        ? '1px solid rgba(255,107,53,0.45)'
+                        : '1px solid rgba(255,107,53,0.35)',
                     fontSize: '0.8rem',
                     color: 'white',
-                    fontWeight: 600,
+                    fontWeight: pathname === '/dashboard/GenerateQR' ? 700 : 600,
                   }}
                 >
-                  <QrCode size={16} />
+                  <QrCode size={16} strokeWidth={pathname === '/dashboard/GenerateQR' ? 2.2 : 1.8} />
                   <span style={{ flex: 1 }}>Generate QR</span>
                   <ChevronRight size={14} style={{ opacity: 0.7 }} />
                 </Link>
@@ -325,8 +342,9 @@ export default function Sidebar() {
                 zIndex: 1,
               }}
             >
-              <Link
-                href="/"
+              <button
+                type="button"
+                onClick={() => void handleSignOut()}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -339,10 +357,14 @@ export default function Sidebar() {
                   background: 'rgba(239,68,68,0.08)',
                   border: '1px solid rgba(239,68,68,0.2)',
                   transition: 'all 0.2s ease',
+                  width: '100%',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  textAlign: 'left',
                 }}
               >
                 <LogOut size={15} /> Sign out
-              </Link>
+              </button>
               <div
                 style={{
                   fontSize: '0.62rem',
